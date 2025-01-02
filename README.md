@@ -23,6 +23,7 @@
 - [ ] 文档完善
 
 ## 项目结构
+```
 stock_daily_report/
 ├── app/
 │ ├── init.py
@@ -44,6 +45,7 @@ stock_daily_report/
 ├── .env.example # 环境变量示例
 ├── .gitignore # Git 忽略文件
 └── requirements.txt # 项目依赖
+```
 
 ## 下一步工作计划
 
