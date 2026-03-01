@@ -16,7 +16,9 @@ claude:
   max_tokens: 4096
   temperature: 0.3  # Low temperature for factual reporting
 
-# Market indices to track (AKShare 东方财富 codes)
+# Market indices to track
+# code format: "1.XXXXXX" for Shanghai, "0.XXXXXX" for Shenzhen
+# Sina codes are derived automatically: 1 -> sh, 0 -> sz
 market:
   indices:
     - code: "1.000001"

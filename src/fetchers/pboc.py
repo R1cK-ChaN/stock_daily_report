@@ -1,7 +1,10 @@
 """
-Fetch PBOC (People's Bank of China) reverse repo operation data.
+Fetch PBOC (People's Bank of China) monetary policy data.
 
-Primary source: AKShare macro_china_gksccz() for open market operations.
+Uses AKShare functions:
+- repo_rate_query(): daily repo rates (FR001/FR007/FR014)
+- macro_china_lpr(): LPR rates
+- macro_china_shibor_all(): SHIBOR interbank rates
 """
 
 import logging
@@ -14,140 +17,141 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-def fetch_repo_operations() -> dict:
+def fetch_repo_rates() -> dict:
     """
-    Fetch PBOC open market operations (reverse repo, MLF, etc.).
-
-    Uses AKShare macro_china_gksccz() which returns:
-    - 操作日期: operation date
-    - 期限(天): tenor in days
-    - 交易量(亿元): transaction volume (100M RMB)
-    - 中标利率(%): winning bid rate
-    - 正/逆回购: repo type (forward/reverse)
+    Fetch latest repo rates (FR001, FR007, FR014).
 
     Returns:
-        Dict with today's operations, maturing repos, net injection, and rate info.
+        Dict with today's rates, recent trend, and metadata.
     """
-    logger.info("Fetching PBOC open market operations...")
+    logger.info("Fetching repo rates...")
     try:
-        df = ak.macro_china_gksccz()
+        df = ak.repo_rate_query()
     except Exception as e:
-        logger.error("Failed to fetch PBOC repo data: %s", e)
-        raise
+        logger.error("Failed to fetch repo rate data: %s", e)
+        return {"has_data": False, "error": str(e)}
 
-    today = date.today()
-    today_str = today.strftime("%Y-%m-%d")
+    if df.empty:
+        return {"has_data": False, "error": "Empty dataframe"}
 
-    # Normalize date column
-    date_col = None
-    for col in df.columns:
-        if "日期" in col or "date" in col.lower():
-            date_col = col
-            break
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date", ascending=False)
 
-    if date_col is None:
-        # Try first column as date
-        date_col = df.columns[0]
+    latest = df.iloc[0]
+    latest_date = latest["date"].strftime("%Y-%m-%d")
 
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-
-    # Today's operations
-    today_ops = df[df[date_col].dt.date == today]
-
-    # Calculate today's injection
-    today_injection = 0.0
-    today_details = []
-
-    # Detect column names dynamically
-    volume_col = next((c for c in df.columns if "交易量" in c or "量" in c), None)
-    rate_col = next((c for c in df.columns if "利率" in c or "rate" in c.lower()), None)
-    tenor_col = next((c for c in df.columns if "期限" in c or "tenor" in c.lower()), None)
-    type_col = next((c for c in df.columns if "回购" in c or "type" in c.lower()), None)
-
-    for _, row in today_ops.iterrows():
-        volume = float(row[volume_col]) if volume_col and pd.notna(row.get(volume_col)) else 0
-        rate = float(row[rate_col]) if rate_col and pd.notna(row.get(rate_col)) else 0
-        tenor = int(row[tenor_col]) if tenor_col and pd.notna(row.get(tenor_col)) else 0
-        op_type = str(row[type_col]) if type_col and pd.notna(row.get(type_col)) else ""
-
-        is_reverse = "逆" in op_type  # 逆回购 = reverse repo (injection)
-        if is_reverse:
-            today_injection += volume
-        else:
-            today_injection -= volume
-
-        today_details.append({
-            "type": op_type,
-            "tenor_days": tenor,
-            "volume_billion": volume,
-            "rate_pct": rate,
-            "is_injection": is_reverse,
+    # Recent trend (last 5 trading days)
+    recent = []
+    for _, row in df.head(5).iterrows():
+        recent.append({
+            "date": row["date"].strftime("%Y-%m-%d"),
+            "FR001": float(row["FR001"]),
+            "FR007": float(row["FR007"]),
+            "FR014": float(row["FR014"]),
         })
 
-    # Calculate maturing repos (operations from 7/14/28 days ago that mature today)
-    maturing_volume = 0.0
-    maturing_details = []
-    for tenor_days in [7, 14, 28]:
-        maturity_origin = today - timedelta(days=tenor_days)
-        maturing_ops = df[
-            (df[date_col].dt.date == maturity_origin)
-        ]
-        for _, row in maturing_ops.iterrows():
-            tenor = int(row[tenor_col]) if tenor_col and pd.notna(row.get(tenor_col)) else 0
-            if tenor == tenor_days:
-                volume = float(row[volume_col]) if volume_col and pd.notna(row.get(volume_col)) else 0
-                op_type = str(row[type_col]) if type_col and pd.notna(row.get(type_col)) else ""
-                if "逆" in op_type:
-                    maturing_volume += volume
-                    maturing_details.append({
-                        "origin_date": maturity_origin.isoformat(),
-                        "tenor_days": tenor_days,
-                        "volume_billion": volume,
-                    })
-
-    net_injection = today_injection - maturing_volume
-
-    # Get recent rate trend (last 10 operations)
-    recent_ops = df.sort_values(date_col, ascending=False).head(10)
-    recent_rates = []
-    for _, row in recent_ops.iterrows():
-        if rate_col and pd.notna(row.get(rate_col)):
-            recent_rates.append({
-                "date": row[date_col].strftime("%Y-%m-%d") if pd.notna(row[date_col]) else "",
-                "rate_pct": float(row[rate_col]),
-            })
-
     result = {
-        "date": today_str,
-        "today_operations": today_details,
-        "today_injection_billion": today_injection,
-        "maturing_repos": maturing_details,
-        "maturing_volume_billion": maturing_volume,
-        "net_injection_billion": net_injection,
-        "recent_rates": recent_rates,
-        "has_data": len(today_details) > 0,
-        "fetch_time": datetime.now().isoformat(),
+        "latest_date": latest_date,
+        "FR001": float(latest["FR001"]),
+        "FR007": float(latest["FR007"]),
+        "FR014": float(latest["FR014"]),
+        "recent_trend": recent,
+        "has_data": True,
     }
 
-    if today_details:
-        logger.info(
-            "PBOC: injection=%.0f亿, maturing=%.0f亿, net=%.0f亿",
-            today_injection, maturing_volume, net_injection,
-        )
-    else:
-        logger.warning("No PBOC operations found for today (%s)", today_str)
+    logger.info("Repo rates (%s): FR001=%.2f, FR007=%.2f, FR014=%.2f",
+                latest_date, result["FR001"], result["FR007"], result["FR014"])
+    return result
 
+
+def fetch_shibor_rates() -> dict:
+    """
+    Fetch latest SHIBOR interbank rates.
+
+    Returns:
+        Dict with overnight, 1W, 2W, 1M, 3M rates.
+    """
+    logger.info("Fetching SHIBOR rates...")
+    try:
+        df = ak.macro_china_shibor_all()
+    except Exception as e:
+        logger.error("Failed to fetch SHIBOR data: %s", e)
+        return {"has_data": False}
+
+    if df.empty:
+        return {"has_data": False}
+
+    df["日期"] = pd.to_datetime(df["日期"])
+    df = df.sort_values("日期", ascending=False)
+    latest = df.iloc[0]
+    latest_date = latest["日期"].strftime("%Y-%m-%d")
+
+    result = {
+        "latest_date": latest_date,
+        "overnight": float(latest["O/N-定价"]),
+        "1W": float(latest["1W-定价"]),
+        "2W": float(latest["2W-定价"]),
+        "1M": float(latest["1M-定价"]),
+        "3M": float(latest["3M-定价"]),
+        "has_data": True,
+    }
+
+    logger.info("SHIBOR (%s): O/N=%.3f, 1W=%.3f", latest_date, result["overnight"], result["1W"])
+    return result
+
+
+def fetch_lpr_rates() -> dict:
+    """
+    Fetch latest LPR (Loan Prime Rate).
+
+    Returns:
+        Dict with 1Y and 5Y LPR rates.
+    """
+    logger.info("Fetching LPR rates...")
+    try:
+        df = ak.macro_china_lpr()
+    except Exception as e:
+        logger.error("Failed to fetch LPR data: %s", e)
+        return {"has_data": False}
+
+    if df.empty:
+        return {"has_data": False}
+
+    df["TRADE_DATE"] = pd.to_datetime(df["TRADE_DATE"])
+    df = df.sort_values("TRADE_DATE", ascending=False)
+    latest = df.iloc[0]
+
+    result = {
+        "latest_date": latest["TRADE_DATE"].strftime("%Y-%m-%d"),
+        "LPR_1Y": float(latest["LPR1Y"]),
+        "LPR_5Y": float(latest["LPR5Y"]),
+        "has_data": True,
+    }
+
+    logger.info("LPR: 1Y=%.2f, 5Y=%.2f", result["LPR_1Y"], result["LPR_5Y"])
     return result
 
 
 def fetch_pboc_data(config: dict) -> dict:
     """
-    Fetch all PBOC-related data.
-
-    Args:
-        config: Settings dict
+    Fetch all PBOC-related monetary data.
 
     Returns:
-        Dict with repo operation data.
+        Dict with repo_rates, shibor, lpr, and metadata.
     """
-    return fetch_repo_operations()
+    today_str = date.today().isoformat()
+
+    repo_rates = fetch_repo_rates()
+    shibor = fetch_shibor_rates()
+    lpr = fetch_lpr_rates()
+
+    has_data = repo_rates.get("has_data", False) or shibor.get("has_data", False)
+
+    return {
+        "date": today_str,
+        "repo_rates": repo_rates,
+        "shibor": shibor,
+        "lpr": lpr,
+        "has_data": has_data,
+        "fetch_time": datetime.now().isoformat(),
+    }

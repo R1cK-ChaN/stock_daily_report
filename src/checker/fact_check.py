@@ -253,18 +253,31 @@ def build_source_numbers(market_data: dict, pboc_data: dict) -> set[float]:
                 if val is not None:
                     numbers.add(round(float(val), 2))
 
-    # PBOC data
-    for key in ["today_injection_billion", "maturing_volume_billion", "net_injection_billion"]:
-        val = pboc_data.get(key)
+    # PBOC data — repo rates, shibor, lpr
+    repo = pboc_data.get("repo_rates", {})
+    for key in ["FR001", "FR007", "FR014"]:
+        val = repo.get(key)
         if val is not None:
             numbers.add(round(float(val), 2))
-            numbers.add(round(abs(float(val)), 2))
-
-    for op in pboc_data.get("today_operations", []):
-        for key in ["tenor_days", "volume_billion", "rate_pct"]:
-            val = op.get(key)
+            numbers.add(round(float(val), 3))
+    for entry in repo.get("recent_trend", []):
+        for key in ["FR001", "FR007", "FR014"]:
+            val = entry.get(key)
             if val is not None:
                 numbers.add(round(float(val), 2))
+
+    shibor = pboc_data.get("shibor", {})
+    for key in ["overnight", "1W", "2W", "1M", "3M"]:
+        val = shibor.get(key)
+        if val is not None:
+            numbers.add(round(float(val), 2))
+            numbers.add(round(float(val), 3))
+
+    lpr = pboc_data.get("lpr", {})
+    for key in ["LPR_1Y", "LPR_5Y"]:
+        val = lpr.get(key)
+        if val is not None:
+            numbers.add(round(float(val), 2))
 
     return numbers
 
@@ -358,8 +371,9 @@ def verify_claims_with_llm(
         "sectors_gainers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("gainers", [])],
         "sectors_losers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("losers", [])],
         "news_headlines": [n["title"] for n in news_data.get("eastmoney_news", [])[:10]],
-        "pboc_net_injection": pboc_data.get("net_injection_billion"),
-        "pboc_operations": pboc_data.get("today_operations", []),
+        "pboc_repo_rates": pboc_data.get("repo_rates", {}),
+        "pboc_shibor": pboc_data.get("shibor", {}),
+        "pboc_lpr": pboc_data.get("lpr", {}),
     }
 
     verification_prompt = f"""你是一位事实核查员。请检查以下市场报告中的每一个事实声明是否都有数据支持。

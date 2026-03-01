@@ -65,11 +65,13 @@ def _format_sector_data(sectors: dict) -> str:
 
 def _format_breadth_data(breadth: dict) -> str:
     """Format market breadth data."""
+    if not breadth:
+        return "（市场广度数据暂缺）"
     return (
-        f"上涨: {breadth['up_count']}家, 下跌: {breadth['down_count']}家, "
-        f"平盘: {breadth['flat_count']}家\n"
-        f"涨停: {breadth['limit_up']}家, 跌停: {breadth['limit_down']}家\n"
-        f"两市总成交额: {breadth['total_amount']/1e8:.2f}亿元"
+        f"上涨: {breadth.get('up_count', 'N/A')}家, 下跌: {breadth.get('down_count', 'N/A')}家, "
+        f"平盘: {breadth.get('flat_count', 'N/A')}家\n"
+        f"涨停: {breadth.get('limit_up', 'N/A')}家, 跌停: {breadth.get('limit_down', 'N/A')}家\n"
+        f"两市总成交额: {breadth.get('total_amount', 0)/1e8:.2f}亿元"
     )
 
 
@@ -97,27 +99,39 @@ def _format_news_data(news_data: dict) -> str:
 
 
 def _format_pboc_data(pboc_data: dict) -> str:
-    """Format PBOC repo data for the prompt."""
+    """Format PBOC monetary data for the prompt."""
     if not pboc_data.get("has_data"):
-        return "（今日无公开市场操作数据）"
+        return "（央行货币市场数据暂缺）"
 
-    lines = [f"操作日期: {pboc_data['date']}"]
+    lines = [f"数据日期: {pboc_data['date']}"]
 
-    for op in pboc_data.get("today_operations", []):
-        op_desc = "投放" if op["is_injection"] else "回笼"
-        lines.append(
-            f"- {op['type']}: {op['tenor_days']}天期, "
-            f"{op['volume_billion']}亿元, 利率{op['rate_pct']}% ({op_desc})"
-        )
+    # Repo rates
+    repo = pboc_data.get("repo_rates", {})
+    if repo.get("has_data"):
+        lines.append(f"\n【银行间回购利率】(截至 {repo['latest_date']})")
+        lines.append(f"- FR001 (隔夜): {repo['FR001']:.2f}%")
+        lines.append(f"- FR007 (7天): {repo['FR007']:.2f}%")
+        lines.append(f"- FR014 (14天): {repo['FR014']:.2f}%")
+        if repo.get("recent_trend"):
+            lines.append("近5日FR007走势:")
+            for r in repo["recent_trend"]:
+                lines.append(f"  {r['date']}: {r['FR007']:.2f}%")
 
-    lines.append(f"\n今日投放: {pboc_data['today_injection_billion']}亿元")
-    lines.append(f"今日到期: {pboc_data['maturing_volume_billion']}亿元")
-    lines.append(f"净投放/回笼: {pboc_data['net_injection_billion']:+.0f}亿元")
+    # SHIBOR
+    shibor = pboc_data.get("shibor", {})
+    if shibor.get("has_data"):
+        lines.append(f"\n【SHIBOR利率】(截至 {shibor['latest_date']})")
+        lines.append(f"- 隔夜: {shibor['overnight']:.3f}%")
+        lines.append(f"- 1周: {shibor['1W']:.3f}%")
+        lines.append(f"- 1月: {shibor['1M']:.3f}%")
+        lines.append(f"- 3月: {shibor['3M']:.3f}%")
 
-    if pboc_data.get("recent_rates"):
-        lines.append("\n【近期利率走势】")
-        for r in pboc_data["recent_rates"][:5]:
-            lines.append(f"- {r['date']}: {r['rate_pct']}%")
+    # LPR
+    lpr = pboc_data.get("lpr", {})
+    if lpr.get("has_data"):
+        lines.append(f"\n【LPR贷款市场报价利率】(截至 {lpr['latest_date']})")
+        lines.append(f"- 1年期LPR: {lpr['LPR_1Y']:.2f}%")
+        lines.append(f"- 5年期以上LPR: {lpr['LPR_5Y']:.2f}%")
 
     return "\n".join(lines)
 
