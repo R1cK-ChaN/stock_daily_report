@@ -77,19 +77,30 @@ def _format_breadth_data(breadth: dict) -> str:
 
 
 def _format_news_data(news_data: dict) -> str:
-    """Format news data for the prompt."""
+    """Format pre-ranked news data for the prompt."""
     lines = []
 
-    for item in news_data.get("eastmoney_news", [])[:10]:
-        lines.append(f"- [{item['source']}] {item['title']}")
-        if item.get("content"):
-            lines.append(f"  摘要: {item['content'][:200]}")
+    # Use pre-ranked news if available (from news_ranker)
+    ranked = news_data.get("ranked_news", [])
+    if ranked:
+        lines.append("【以下新闻已按市场影响力预排序】")
+        for i, item in enumerate(ranked, 1):
+            reason = item.get("llm_reason", "")
+            reason_str = f" | 理由: {reason}" if reason else ""
+            lines.append(
+                f"[重要性: {i}] {item['title']}\n"
+                f"  来源: {item.get('source', '未知')}{reason_str}\n"
+                f"  摘要: {item.get('content', '')[:300]}"
+            )
+    else:
+        # Fallback: use raw market_news if ranking wasn't run
+        for item in news_data.get("market_news", [])[:10]:
+            lines.append(f"- [{item['source']}] {item['title']}")
+            if item.get("content"):
+                lines.append(f"  摘要: {item['content'][:200]}")
 
-    for item in news_data.get("cctv_news", [])[:5]:
-        lines.append(f"- [{item['source']}] {item['title']}")
-
-    for item in news_data.get("rss_news", [])[:5]:
-        lines.append(f"- [{item['source']}] {item['title']}")
+        for item in news_data.get("cctv_news", [])[:5]:
+            lines.append(f"- [{item['source']}] {item['title']}")
 
     if news_data.get("economic_data"):
         lines.append("\n【经济数据】")
@@ -178,7 +189,8 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 字数：300-500字
 
 ## 二、基本面分析 (重要新闻与经济数据)
-- 从提供的新闻中挑选2-3条最具市场影响力的新闻进行解读
+- 以下是按市场影响力预选的重要新闻，请对排名靠前的2-3条进行深入解读分析
+- 不得引用或编造未在上方数据中出现的新闻
 - 分析对A股市场的潜在影响
 - 如有经济数据发布，进行解读
 - 字数：200-400字
@@ -261,7 +273,8 @@ def generate_report(
                 "has_breadth": bool(market_data.get("breadth")),
             },
             "news_data_summary": {
-                "num_eastmoney": len(news_data.get("eastmoney_news", [])),
+                "num_market_news": len(news_data.get("market_news", [])),
+                "num_ranked": len(news_data.get("ranked_news", [])),
                 "num_cctv": len(news_data.get("cctv_news", [])),
                 "num_econ": len(news_data.get("economic_data", [])),
             },

@@ -29,6 +29,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from src.fetchers.market_data import fetch_all_market_data
 from src.fetchers.news import fetch_all_news
+from src.fetchers.news_ranker import rank_news
 from src.fetchers.pboc import fetch_pboc_data
 from src.generator.report_generator import generate_report
 from src.checker.fact_check import run_pre_generation_checks, run_post_generation_checks
@@ -101,7 +102,7 @@ def fetch_all_data(config: dict) -> tuple[dict, dict, dict]:
     return results.get("market", {}), results.get("news", {}), results.get("pboc", {})
 
 
-def save_report(report_text: str, check_results: dict, config: dict) -> Path:
+def save_report(report_text: str, check_results: dict, news_data: dict, config: dict) -> Path:
     """
     Save the generated report to the output directory.
 
@@ -109,7 +110,6 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
         Path to the saved report file.
     """
     output_dir = _today_output_dir()
-    today_str = datetime.now().strftime("%Y-%m-%d")
 
     report_path = output_dir / "report.md"
 
@@ -146,6 +146,7 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
                 "verification_rate": check_results.get("number_check", {}).get("verification_rate", 0),
             },
         },
+        "news_ranking": news_data.get("ranking_details", {}),
     }
     with open(audit_path, "w", encoding="utf-8") as f:
         json.dump(audit_data, f, ensure_ascii=False, indent=2)
@@ -197,6 +198,20 @@ def run_pipeline():
 
     # Step 1: Fetch all data
     market_data, news_data, pboc_data = fetch_all_data(config)
+
+    # Step 1.5: Rank news
+    logger.info("=" * 60)
+    logger.info("STEP 1.5: Ranking news by market relevance...")
+    logger.info("=" * 60)
+
+    try:
+        news_data = rank_news(news_data, config)
+        logger.info(
+            "News ranking complete: %d ranked items",
+            len(news_data.get("ranked_news", [])),
+        )
+    except Exception as e:
+        logger.warning("News ranking failed (%s), proceeding with unranked news", e)
 
     # Step 2: Pre-generation validation
     logger.info("=" * 60)
@@ -259,7 +274,7 @@ def run_pipeline():
     logger.info("STEP 5: Saving report and delivering...")
     logger.info("=" * 60)
 
-    report_path = save_report(report_text, post_checks, config)
+    report_path = save_report(report_text, post_checks, news_data, config)
 
     # Step 6: Deliver via WeChat
     delivery_result = deliver_report(report_text, config)

@@ -19,16 +19,21 @@ TRIGGER: cron at 15:30 CST (or manual run)
     ▼ Yes
 ┌──────────┐  ┌──────────┐  ┌──────────┐
 │  Market   │  │   News   │  │   PBOC   │   ← Parallel fetch
-│  (Sina)   │  │  (东方财富) │  │ (AKShare)│
+│  (Sina)   │  │(EM/CLS/富途)│  │ (AKShare)│
 └────┬─────┘  └────┬─────┘  └────┬─────┘
      └──────────┬──┴─────────────┘
+                ▼
+       News Ranking (2-stage)
+       - Stage A: keyword scoring (5-tier dictionary)
+       - Stage B: LLM pre-ranking (titles only → top 5)
+                │
                 ▼
        Data Validation (pre-LLM)
        - Freshness / completeness / range checks
                 │
                 ▼
        LLM Report Generation (OpenRouter)
-       - Structured prompt with all data attached
+       - Structured prompt with ranked news + all data
                 │
                 ▼
        Fact-Check (post-LLM)
@@ -48,7 +53,8 @@ TRIGGER: cron at 15:30 CST (or manual run)
 │   ├── fetchers/
 │   │   ├── market_data.py          # Index quotes (Sina primary, EM fallback),
 │   │   │                           #   sectors, breadth, top movers
-│   │   ├── news.py                 # 东方财富 news, CCTV, RSS, economic data
+│   │   ├── news.py                 # Multi-source news: 东方财富, 财联社, 富途, CCTV
+│   │   ├── news_ranker.py          # 2-stage ranking: keyword scoring + LLM re-rank
 │   │   └── pboc.py                 # Repo rates (FR001/007/014), SHIBOR, LPR
 │   ├── generator/
 │   │   └── report_generator.py     # Prompt assembly + OpenRouter API call
@@ -65,7 +71,7 @@ TRIGGER: cron at 15:30 CST (or manual run)
 ├── output/                         # Generated reports by date
 │   └── YYYY-MM-DD/
 │       ├── report.md               # The generated report
-│       ├── audit.json              # Fact-check results
+│       ├── audit.json              # Fact-check results + news ranking details
 │       └── pipeline_*.log          # Run logs
 ├── .env                            # API keys (git-ignored)
 ├── .env.example                    # Template for .env
@@ -103,10 +109,11 @@ python src/main.py
 The pipeline will:
 1. Check the Sina trading calendar — skip if not a trading day (weekends + Chinese holidays)
 2. Fetch market data, news, and PBOC data in parallel
-3. Validate data freshness, completeness, and value ranges
-4. Generate report via Gemini 3 Flash on OpenRouter
-5. Fact-check: cross-verify numbers + LLM claim verification
-6. Save to `output/YYYY-MM-DD/report.md` and optionally push to WeChat
+3. **Rank news** — keyword scoring (87 headlines → top 10) then LLM re-ranking (top 10 → top 5 with reasons)
+4. Validate data freshness, completeness, and value ranges
+5. Generate report via Gemini 3 Flash on OpenRouter (prompt includes only pre-ranked headlines)
+6. Fact-check: cross-verify numbers + LLM claim verification
+7. Save to `output/YYYY-MM-DD/report.md` and optionally push to WeChat
 
 ## Scheduling (Cron)
 
@@ -127,9 +134,29 @@ The trading day check is built-in — safe to run daily including weekends.
 | Repo rates | 全国银行间同业拆借中心 | `repo_rate_query()` | High |
 | SHIBOR | 同上 | `macro_china_shibor_all()` | High |
 | LPR | 同上 | `macro_china_lpr()` | High |
-| Financial news | 东方财富 | `stock_news_em()` | High |
-| CCTV news | 央视 | `news_cctv()` | Medium |
+| Financial news (primary) | 东方财富 | `stock_info_global_em()` | High |
+| Financial news (secondary) | 财联社 | `stock_info_global_cls()` | High |
+| Financial news (tertiary) | 富途 | `stock_info_global_futu()` | High |
+| CCTV news | 央视 | `news_cctv()` | Medium (empty on weekends) |
 | CPI / PMI / GDP | 国家统计局 | `macro_china_cpi_yearly()` etc. | High |
+
+## News Ranking
+
+A two-stage hybrid ranking system sits between data fetch and report generation:
+
+**Stage A — Keyword Scoring (deterministic)**
+- 5-tier keyword dictionary: monetary policy (10) → economic data (8) → market structure (6) → hot sectors (4) → bellwether companies (3)
+- Noise penalty (-5) for irrelevant topics (entertainment, sports, etc.)
+- Multipliers: source credibility (央视 1.4×, 财联社 1.2×) × recency (today 1.0, yesterday 0.7, older 0.4)
+- 2+ tier-1 keyword matches trigger a 1.5× compounding bonus
+
+**Stage B — LLM Pre-Ranking (~700 tokens)**
+- Sends only titles (no content) to Gemini Flash for cost efficiency
+- Prompt: rank by A-share impact (宏观政策 > 经济数据 > 行业政策 > 个股事件)
+- Returns top 5 with 10-character reasons
+- Falls back to keyword-only ranking on LLM failure
+
+Rankings are logged in `audit.json` for transparency.
 
 ## Fact-Checking
 
@@ -149,5 +176,5 @@ Reports with unverified numbers or ungrounded claims are flagged `[NEEDS REVIEW]
 - **Market indices**: list of index codes to track (Shanghai/Shenzhen)
 - **Sectors**: how many top gainers/losers to include
 - **Validation**: max daily change threshold, index value ranges
-- **News**: max headlines to fetch, number to select for report
+- **News**: max headlines (50), sources (eastmoney_global, cls, futu), ranking config (keyword_top_n, llm_top_n, llm_ranking_enabled)
 - **WeChat**: enable/disable delivery, message format

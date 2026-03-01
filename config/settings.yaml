@@ -49,11 +49,17 @@ validation:
 
 # News settings
 news:
-  max_headlines: 20        # Fetch up to 20 headlines
-  select_top_n: 5          # LLM selects top 5 for report
+  max_headlines: 50          # Fetch more since we have better sources
+  select_top_n: 5
   sources:
-    - "eastmoney"          # 东方财富
-    - "cls"                # 财联社
+    - "eastmoney_global"     # 东方财富 (stock_info_global_em)
+    - "cls"                  # 财联社 (stock_info_global_cls)
+    - "futu"                 # 富途 (stock_info_global_futu)
+  ranking:
+    keyword_top_n: 10        # Stage A: keyword scoring keeps top 10
+    llm_top_n: 5             # Stage B: LLM re-ranks to top 5
+    llm_ranking_enabled: true
+    llm_max_tokens: 300
 
 # Sector performance
 sectors:

@@ -1,7 +1,11 @@
 """
 Fetch financial news for China A-shares market report.
 
-Sources: AKShare (东方财富 news feed), RSS feeds (财联社, etc.).
+Sources:
+- stock_info_global_em()  — 东方财富 broad market headlines (primary)
+- stock_info_global_cls() — 财联社 real-time flash news (secondary)
+- stock_info_global_futu() — 富途 international coverage (tertiary)
+- news_cctv()             — 央视 policy signals (weekdays)
 """
 
 import logging
@@ -9,46 +13,32 @@ from datetime import datetime
 from typing import Any
 
 import akshare as ak
-import feedparser
-import requests
 
 logger = logging.getLogger(__name__)
 
-# RSS feeds for Chinese financial news
-RSS_FEEDS = {
-    "cls": "https://www.cls.cn/rss",  # 财联社
-}
 
-
-def fetch_eastmoney_news(max_items: int = 20) -> list[dict]:
+def fetch_em_news(max_items: int = 50) -> list[dict]:
     """
-    Fetch latest financial news from 东方财富 via AKShare.
+    Fetch broad market news from 东方财富 via stock_info_global_em().
 
     Returns:
-        List of dicts with title, content, publish_time, source.
+        List of standardized dicts: {title, content, publish_time, source, url}
     """
-    logger.info("Fetching 东方财富 news...")
+    logger.info("Fetching 东方财富 global news...")
     try:
-        df = ak.stock_news_em(symbol="300059")
-        # stock_news_em requires a symbol — use a popular stock to get general news
-        # Alternatively try the general financial news endpoint
-    except Exception:
-        logger.warning("stock_news_em failed, trying alternative news source...")
-        try:
-            # Try general financial news
-            df = ak.news_cctv(date=datetime.now().strftime("%Y%m%d"))
-        except Exception as e:
-            logger.error("All news fetching failed: %s", e)
-            return []
+        df = ak.stock_info_global_em()
+    except Exception as e:
+        logger.error("stock_info_global_em() failed: %s", e)
+        return []
 
     results = []
     for _, row in df.head(max_items).iterrows():
         item = {
-            "title": str(row.get("新闻标题", row.get("title", ""))),
-            "content": str(row.get("新闻内容", row.get("content", "")))[:500],
-            "publish_time": str(row.get("发布时间", row.get("date", ""))),
+            "title": str(row.get("标题", "")),
+            "content": str(row.get("摘要", row.get("内容", "")))[:500],
+            "publish_time": str(row.get("发布时间", "")),
             "source": "东方财富",
-            "url": str(row.get("新闻链接", row.get("url", ""))),
+            "url": str(row.get("链接", row.get("新闻链接", ""))),
         }
         if item["title"]:
             results.append(item)
@@ -57,12 +47,79 @@ def fetch_eastmoney_news(max_items: int = 20) -> list[dict]:
     return results
 
 
+def fetch_cls_news(max_items: int = 20) -> list[dict]:
+    """
+    Fetch real-time flash news from 财联社 via stock_info_global_cls().
+
+    Returns:
+        List of standardized dicts: {title, content, publish_time, source, url}
+    """
+    logger.info("Fetching 财联社 flash news...")
+    try:
+        df = ak.stock_info_global_cls()
+    except Exception as e:
+        logger.error("stock_info_global_cls() failed: %s", e)
+        return []
+
+    results = []
+    for _, row in df.head(max_items).iterrows():
+        title = str(row.get("标题", ""))
+        content = str(row.get("内容", ""))[:500]
+        # CLS may have date and time in separate columns
+        pub_date = str(row.get("发布日期", ""))
+        pub_time = str(row.get("发布时间", ""))
+        publish_time = f"{pub_date} {pub_time}".strip()
+
+        item = {
+            "title": title if title else content[:80],
+            "content": content,
+            "publish_time": publish_time,
+            "source": "财联社",
+            "url": "",
+        }
+        if item["title"]:
+            results.append(item)
+
+    logger.info("Fetched %d news items from 财联社", len(results))
+    return results
+
+
+def fetch_futu_news(max_items: int = 50) -> list[dict]:
+    """
+    Fetch international market news from 富途 via stock_info_global_futu().
+
+    Returns:
+        List of standardized dicts: {title, content, publish_time, source, url}
+    """
+    logger.info("Fetching 富途 news...")
+    try:
+        df = ak.stock_info_global_futu()
+    except Exception as e:
+        logger.error("stock_info_global_futu() failed: %s", e)
+        return []
+
+    results = []
+    for _, row in df.head(max_items).iterrows():
+        item = {
+            "title": str(row.get("标题", "")),
+            "content": str(row.get("内容", row.get("摘要", "")))[:500],
+            "publish_time": str(row.get("发布时间", "")),
+            "source": "富途",
+            "url": str(row.get("链接", "")),
+        }
+        if item["title"]:
+            results.append(item)
+
+    logger.info("Fetched %d news items from 富途", len(results))
+    return results
+
+
 def fetch_cctv_news() -> list[dict]:
     """
     Fetch CCTV financial news via AKShare (联播).
 
     Returns:
-        List of dicts with title, content, source.
+        List of standardized dicts: {title, content, publish_time, source, url}
     """
     logger.info("Fetching CCTV news...")
     try:
@@ -85,36 +142,6 @@ def fetch_cctv_news() -> list[dict]:
             results.append(item)
 
     logger.info("Fetched %d CCTV news items", len(results))
-    return results
-
-
-def fetch_rss_news(feed_url: str, source_name: str, max_items: int = 10) -> list[dict]:
-    """
-    Fetch news from an RSS feed.
-
-    Returns:
-        List of dicts with title, content, publish_time, source, url.
-    """
-    logger.info("Fetching RSS feed: %s", source_name)
-    try:
-        feed = feedparser.parse(feed_url)
-    except Exception as e:
-        logger.error("RSS fetch failed for %s: %s", source_name, e)
-        return []
-
-    results = []
-    for entry in feed.entries[:max_items]:
-        item = {
-            "title": entry.get("title", ""),
-            "content": entry.get("summary", "")[:500],
-            "publish_time": entry.get("published", ""),
-            "source": source_name,
-            "url": entry.get("link", ""),
-        }
-        if item["title"]:
-            results.append(item)
-
-    logger.info("Fetched %d items from %s RSS", len(results), source_name)
     return results
 
 
@@ -176,32 +203,43 @@ def fetch_economic_calendar() -> list[dict]:
 
 def fetch_all_news(config: dict) -> dict:
     """
-    Fetch all news data.
+    Fetch all news data from multiple sources.
 
     Args:
         config: Settings dict
 
     Returns:
-        Dict with keys: eastmoney_news, cctv_news, rss_news, economic_data, fetch_time
+        Dict with keys: market_news, cctv_news, economic_data, fetch_time
     """
     news_cfg = config.get("news", {})
-    max_headlines = news_cfg.get("max_headlines", 20)
+    max_headlines = news_cfg.get("max_headlines", 50)
 
-    eastmoney_news = fetch_eastmoney_news(max_items=max_headlines)
+    # Primary: 东方财富 broad market news
+    em_news = fetch_em_news(max_items=max_headlines)
+
+    # Secondary: 财联社 flash news
+    cls_news = fetch_cls_news(max_items=20)
+
+    # Tertiary: 富途 international coverage
+    futu_news = fetch_futu_news(max_items=max_headlines)
+
+    # Combine all market news into a single list
+    market_news = em_news + cls_news + futu_news
+
+    # CCTV policy signals
     cctv_news = fetch_cctv_news()
-
-    # Fetch from RSS feeds
-    rss_news = []
-    for source_name, feed_url in RSS_FEEDS.items():
-        items = fetch_rss_news(feed_url, source_name, max_items=10)
-        rss_news.extend(items)
 
     economic_data = fetch_economic_calendar()
 
+    logger.info(
+        "Total news fetched: %d market (%d EM + %d CLS + %d futu), %d CCTV, %d econ",
+        len(market_news), len(em_news), len(cls_news), len(futu_news),
+        len(cctv_news), len(economic_data),
+    )
+
     return {
-        "eastmoney_news": eastmoney_news,
+        "market_news": market_news,
         "cctv_news": cctv_news,
-        "rss_news": rss_news,
         "economic_data": economic_data,
         "fetch_time": datetime.now().isoformat(),
     }

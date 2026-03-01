@@ -89,9 +89,8 @@ def validate_data_completeness(market_data: dict, news_data: dict, pboc_data: di
 
     # Check news
     total_news = (
-        len(news_data.get("eastmoney_news", []))
+        len(news_data.get("market_news", []))
         + len(news_data.get("cctv_news", []))
-        + len(news_data.get("rss_news", []))
     )
     if total_news == 0:
         issues.append({
@@ -374,7 +373,7 @@ def verify_claims_with_llm(
         "breadth": market_data.get("breadth", {}),
         "sectors_gainers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("gainers", [])],
         "sectors_losers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("losers", [])],
-        "news_headlines": [n["title"] for n in news_data.get("eastmoney_news", [])[:10]],
+        "news_headlines": [n["title"] for n in news_data.get("ranked_news", news_data.get("market_news", []))[:10]],
         "pboc_repo_rates": pboc_data.get("repo_rates", {}),
         "pboc_shibor": pboc_data.get("shibor", {}),
         "pboc_lpr": pboc_data.get("lpr", {}),
