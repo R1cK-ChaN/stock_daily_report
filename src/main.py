@@ -18,10 +18,14 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# Load .env from project root
+load_dotenv(PROJECT_ROOT / ".env")
 
 from src.fetchers.market_data import fetch_all_market_data
 from src.fetchers.news import fetch_all_news
@@ -146,6 +150,15 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
     return report_path
 
 
+def is_trading_day() -> bool:
+    """Check if today is a trading day (weekday, not a known holiday)."""
+    today = datetime.now()
+    # Weekend check
+    if today.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    return True
+
+
 def run_pipeline():
     """
     Run the full report generation pipeline.
@@ -158,6 +171,15 @@ def run_pipeline():
     logger.info("Daily A-Shares Market Report Pipeline")
     logger.info("Started at: %s", start_time.isoformat())
     logger.info("=" * 60)
+
+    # Check if today is a trading day
+    if not is_trading_day():
+        logger.info("Today is not a trading day (weekend/holiday). Skipping.")
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "Not a trading day",
+        }
 
     # Load config
     config = load_config()
@@ -265,7 +287,9 @@ def main():
 
     try:
         result = run_pipeline()
-        if result["success"]:
+        if result.get("skipped"):
+            print(f"\nSkipped: {result.get('reason')}")
+        elif result["success"]:
             print(f"\nReport generated successfully: {result['report_path']}")
         else:
             print(f"\nPipeline failed at stage: {result.get('stage', 'unknown')}")

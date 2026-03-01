@@ -10,9 +10,10 @@ api_keys:
   anthropic_api_key: ${ANTHROPIC_API_KEY}
   wechat_webhook_url: ${WECHAT_WEBHOOK_URL}
 
-# Claude API settings
-claude:
-  model: "claude-sonnet-4-20250514"
+# LLM settings (via OpenRouter)
+llm:
+  base_url: "https://openrouter.ai/api/v1"
+  model: "anthropic/claude-sonnet-4.6"
   max_tokens: 4096
   temperature: 0.3  # Low temperature for factual reporting
 

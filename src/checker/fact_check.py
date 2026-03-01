@@ -7,12 +7,14 @@ Three layers of verification:
 3. LLM claim verification — use a second LLM call to check for ungrounded claims
 """
 
+import json
 import logging
+import os
 import re
 from datetime import date, datetime
 from typing import Any
 
-import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -361,8 +363,10 @@ def verify_claims_with_llm(
     Returns:
         Dict with 'verified', 'issues', 'verifier_response'.
     """
-    claude_cfg = config.get("claude", {})
-    model = claude_cfg.get("model", "claude-sonnet-4-20250514")
+    llm_cfg = config.get("llm", config.get("claude", {}))
+    model = llm_cfg.get("model", "anthropic/claude-sonnet-4-20250514")
+    base_url = llm_cfg.get("base_url", "https://openrouter.ai/api/v1")
+    api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     # Build a concise data summary for the verifier
     data_summary = {
@@ -407,15 +411,15 @@ def verify_claims_with_llm(
     logger.info("Running LLM claim verification...")
 
     try:
-        client = anthropic.Anthropic()
-        message = client.messages.create(
+        client = openai.OpenAI(base_url=base_url, api_key=api_key)
+        response = client.chat.completions.create(
             model=model,
             max_tokens=2048,
             temperature=0,
             messages=[{"role": "user", "content": verification_prompt}],
         )
 
-        response_text = message.content[0].text
+        response_text = response.choices[0].message.content
 
         # Try to parse JSON from response
         json_match = re.search(r'\{[\s\S]*\}', response_text)
@@ -428,14 +432,15 @@ def verify_claims_with_llm(
                 "summary": response_text,
             }
 
+        usage = response.usage
         result = {
             "verified": verification_result.get("overall_verified", None),
             "issues": verification_result.get("issues", []),
             "summary": verification_result.get("summary", ""),
             "verifier_response": response_text,
             "usage": {
-                "input_tokens": message.usage.input_tokens,
-                "output_tokens": message.usage.output_tokens,
+                "input_tokens": usage.prompt_tokens if usage else 0,
+                "output_tokens": usage.completion_tokens if usage else 0,
             },
         }
 

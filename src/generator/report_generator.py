@@ -8,10 +8,11 @@ to minimize hallucination.
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
-import anthropic
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -220,33 +221,38 @@ def generate_report(
     Returns:
         Dict with 'report_text', 'model', 'usage', 'prompt_data'
     """
-    claude_cfg = config.get("claude", {})
-    model = claude_cfg.get("model", "claude-sonnet-4-20250514")
-    max_tokens = claude_cfg.get("max_tokens", 4096)
-    temperature = claude_cfg.get("temperature", 0.3)
+    llm_cfg = config.get("llm", config.get("claude", {}))
+    model = llm_cfg.get("model", "anthropic/claude-sonnet-4-20250514")
+    max_tokens = llm_cfg.get("max_tokens", 4096)
+    temperature = llm_cfg.get("temperature", 0.3)
+    base_url = llm_cfg.get("base_url", "https://openrouter.ai/api/v1")
+    api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     prompt = build_generation_prompt(market_data, news_data, pboc_data)
 
     logger.info("Generating report with model=%s, max_tokens=%d", model, max_tokens)
 
-    client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
+    client = openai.OpenAI(base_url=base_url, api_key=api_key)
 
-    message = client.messages.create(
+    response = client.chat.completions.create(
         model=model,
         max_tokens=max_tokens,
         temperature=temperature,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
     )
 
-    report_text = message.content[0].text
+    report_text = response.choices[0].message.content
+    usage = response.usage
 
     result = {
         "report_text": report_text,
         "model": model,
         "usage": {
-            "input_tokens": message.usage.input_tokens,
-            "output_tokens": message.usage.output_tokens,
+            "input_tokens": usage.prompt_tokens if usage else 0,
+            "output_tokens": usage.completion_tokens if usage else 0,
         },
         "prompt_data": {
             "market_data_summary": {
