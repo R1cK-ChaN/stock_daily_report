@@ -1,0 +1,68 @@
+# Daily China A-Shares Market Report — Configuration
+
+# Schedule
+schedule:
+  timezone: "Asia/Shanghai"
+  run_time: "15:30"  # After market close at 15:00 CST
+
+# API Keys (set via environment variables for security)
+api_keys:
+  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  wechat_webhook_url: ${WECHAT_WEBHOOK_URL}
+
+# Claude API settings
+claude:
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4096
+  temperature: 0.3  # Low temperature for factual reporting
+
+# Market indices to track (AKShare 东方财富 codes)
+market:
+  indices:
+    - code: "1.000001"
+      name: "上证指数"
+    - code: "0.399001"
+      name: "深证成指"
+    - code: "0.399006"
+      name: "创业板指"
+    - code: "0.399005"
+      name: "中小100"
+    - code: "1.000688"
+      name: "科创50"
+
+# Data validation thresholds
+validation:
+  index_range:
+    sse_composite_min: 2000
+    sse_composite_max: 8000
+    szse_component_min: 5000
+    szse_component_max: 20000
+    chinext_min: 1000
+    chinext_max: 5000
+  max_daily_change_pct: 15.0  # Flag if any index moves >15% (circuit breaker territory)
+  required_fields:
+    - index_prices
+    - pboc_repo
+
+# News settings
+news:
+  max_headlines: 20        # Fetch up to 20 headlines
+  select_top_n: 5          # LLM selects top 5 for report
+  sources:
+    - "eastmoney"          # 东方财富
+    - "cls"                # 财联社
+
+# Sector performance
+sectors:
+  top_n_gainers: 5
+  top_n_losers: 5
+
+# Output
+output:
+  directory: "output"
+  filename_format: "daily_report_{date}.md"
+
+# WeChat delivery
+wechat:
+  enabled: false  # Set to true when webhook URL is configured
+  msg_type: "markdown"
