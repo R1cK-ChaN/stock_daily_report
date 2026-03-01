@@ -151,12 +151,20 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
 
 
 def is_trading_day() -> bool:
-    """Check if today is a trading day (weekday, not a known holiday)."""
-    today = datetime.now()
-    # Weekend check
-    if today.weekday() >= 5:  # Saturday=5, Sunday=6
-        return False
-    return True
+    """Check if today is an A-share trading day using Sina's calendar.
+    Covers weekends and Chinese holidays (Spring Festival, National Day, etc.).
+    Falls back to a simple weekday check if the API call fails.
+    """
+    import akshare as ak
+
+    today = datetime.now().date()
+    try:
+        df = ak.tool_trade_date_hist_sina()
+        trade_dates = set(df["trade_date"].astype(str))
+        return today.strftime("%Y-%m-%d") in trade_dates
+    except Exception as e:
+        logger.warning("Trading calendar fetch failed (%s), falling back to weekday check", e)
+        return today.weekday() < 5
 
 
 def run_pipeline():
