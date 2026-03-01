@@ -15,8 +15,6 @@ venv/
 # Local development
 .DS_Store
 
-# Output files
-output/*.md
-output/*.json
-output/*.log
+# Output files (date-based subdirectories)
+output/*/
 .venv/

@@ -37,6 +37,14 @@ from src.delivery.wechat import deliver_report
 logger = logging.getLogger(__name__)
 
 
+def _today_output_dir() -> Path:
+    """Return today's date-based output directory, e.g. output/2026-03-01/."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    d = PROJECT_ROOT / "output" / today_str
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def setup_logging():
     """Configure logging for the pipeline."""
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -46,7 +54,7 @@ def setup_logging():
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
-                PROJECT_ROOT / "output" / f"pipeline_{datetime.now():%Y%m%d_%H%M%S}.log",
+                _today_output_dir() / f"pipeline_{datetime.now():%H%M%S}.log",
                 encoding="utf-8",
             ),
         ],
@@ -100,15 +108,10 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
     Returns:
         Path to the saved report file.
     """
-    output_dir = PROJECT_ROOT / config.get("output", {}).get("directory", "output")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
+    output_dir = _today_output_dir()
     today_str = datetime.now().strftime("%Y-%m-%d")
-    filename = config.get("output", {}).get(
-        "filename_format", "daily_report_{date}.md"
-    ).format(date=today_str)
 
-    report_path = output_dir / filename
+    report_path = output_dir / "report.md"
 
     # Add metadata header and review flags
     header_lines = [
@@ -131,7 +134,7 @@ def save_report(report_text: str, check_results: dict, config: dict) -> Path:
     logger.info("Report saved to: %s", report_path)
 
     # Also save raw data for audit trail
-    audit_path = output_dir / f"audit_{today_str}.json"
+    audit_path = output_dir / "audit.json"
     audit_data = {
         "generated_at": datetime.now().isoformat(),
         "check_results": {
