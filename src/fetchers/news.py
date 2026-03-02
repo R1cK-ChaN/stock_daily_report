@@ -1,245 +1,248 @@
 """
-Fetch financial news for China A-shares market report.
+Fetch financial news from curated RSS feeds for A-shares market report.
 
-Sources:
-- stock_info_global_em()  — 东方财富 broad market headlines (primary)
-- stock_info_global_cls() — 财联社 real-time flash news (secondary)
-- stock_info_global_futu() — 富途 international coverage (tertiary)
-- news_cctv()             — 央视 policy signals (weekdays)
+Uses feedparser + requests to fetch ~20 macro-finance RSS feeds in parallel,
+then deduplicates and filters by recency before passing to the ranking pipeline.
 """
 
+import html
 import logging
-from datetime import datetime
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
+from time import mktime
 from typing import Any
 
-import akshare as ak
+import feedparser
+import requests
 
 logger = logging.getLogger(__name__)
 
 
-def fetch_em_news(max_items: int = 50) -> list[dict]:
-    """
-    Fetch broad market news from 东方财富 via stock_info_global_em().
+def _parse_publish_time(entry: dict) -> str | None:
+    """Extract ISO 8601 publish time from a feedparser entry.
 
-    Returns:
-        List of standardized dicts: {title, content, publish_time, source, url}
+    Tries published_parsed, updated_parsed, then raw string parsing.
+    Returns ISO 8601 string or None.
     """
-    logger.info("Fetching 东方财富 global news...")
+    for attr in ("published_parsed", "updated_parsed"):
+        tp = entry.get(attr)
+        if tp:
+            try:
+                dt = datetime.fromtimestamp(mktime(tp), tz=timezone.utc)
+                return dt.isoformat()
+            except (OverflowError, ValueError, OSError):
+                continue
+
+    # Fallback: try raw string
+    for attr in ("published", "updated"):
+        raw = entry.get(attr, "")
+        if not raw:
+            continue
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(raw)
+            return dt.isoformat()
+        except (ValueError, TypeError):
+            pass
+
+    return None
+
+
+def _extract_source_from_gnews(title: str) -> tuple[str, str]:
+    """Google News titles end with ' - SourceName'. Split them.
+
+    Returns (clean_title, source_name).
+    """
+    parts = title.rsplit(" - ", 1)
+    if len(parts) == 2 and len(parts[1]) < 50:
+        return parts[0].strip(), parts[1].strip()
+    return title, ""
+
+
+def _clean_html_content(raw: str) -> str:
+    """Strip HTML tags, decode entities, truncate to 500 chars."""
+    if not raw:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:500]
+
+
+def _is_within_age(publish_time: str | None, max_age_hours: int) -> bool:
+    """Check if a publish time is within the max age window."""
+    if not publish_time:
+        return True  # Keep items with unknown time (let ranking handle them)
+
     try:
-        df = ak.stock_info_global_em()
-    except Exception as e:
-        logger.error("stock_info_global_em() failed: %s", e)
+        dt = datetime.fromisoformat(publish_time)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        return dt >= cutoff
+    except (ValueError, TypeError):
+        return True
+
+
+def _fetch_single_feed(feed_cfg: dict, timeout: int) -> list[dict]:
+    """Fetch one RSS feed and return standardized items.
+
+    Each item: {title, content, publish_time, source, category, url}
+    """
+    name = feed_cfg["name"]
+    url = feed_cfg["url"]
+    category = feed_cfg.get("category", "general")
+
+    try:
+        resp = requests.get(url, timeout=timeout, headers={
+            "User-Agent": "DailyStockReport/1.0 (RSS reader)"
+        })
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning("Feed '%s' fetch failed: %s", name, e)
         return []
 
-    results = []
-    for _, row in df.head(max_items).iterrows():
-        item = {
-            "title": str(row.get("标题", "")),
-            "content": str(row.get("摘要", row.get("内容", "")))[:500],
-            "publish_time": str(row.get("发布时间", "")),
-            "source": "东方财富",
-            "url": str(row.get("链接", row.get("新闻链接", ""))),
-        }
-        if item["title"]:
-            results.append(item)
+    feed = feedparser.parse(resp.content)
 
-    logger.info("Fetched %d news items from 东方财富", len(results))
-    return results
-
-
-def fetch_cls_news(max_items: int = 20) -> list[dict]:
-    """
-    Fetch real-time flash news from 财联社 via stock_info_global_cls().
-
-    Returns:
-        List of standardized dicts: {title, content, publish_time, source, url}
-    """
-    logger.info("Fetching 财联社 flash news...")
-    try:
-        df = ak.stock_info_global_cls()
-    except Exception as e:
-        logger.error("stock_info_global_cls() failed: %s", e)
+    if feed.bozo and not feed.entries:
+        logger.warning("Feed '%s' parse error: %s", name, getattr(feed, "bozo_exception", "unknown"))
         return []
 
-    results = []
-    for _, row in df.head(max_items).iterrows():
-        title = str(row.get("标题", ""))
-        content = str(row.get("内容", ""))[:500]
-        # CLS may have date and time in separate columns
-        pub_date = str(row.get("发布日期", ""))
-        pub_time = str(row.get("发布时间", ""))
-        publish_time = f"{pub_date} {pub_time}".strip()
+    items = []
+    is_gnews = "news.google.com" in url
 
-        item = {
-            "title": title if title else content[:80],
+    for entry in feed.entries:
+        title = entry.get("title", "").strip()
+        if not title:
+            continue
+
+        source = name
+        if is_gnews:
+            title, extracted_source = _extract_source_from_gnews(title)
+            if extracted_source:
+                source = extracted_source
+
+        # Content: try summary, then description
+        raw_content = entry.get("summary", entry.get("description", ""))
+        content = _clean_html_content(raw_content)
+
+        publish_time = _parse_publish_time(entry)
+
+        items.append({
+            "title": title,
             "content": content,
-            "publish_time": publish_time,
-            "source": "财联社",
-            "url": "",
-        }
-        if item["title"]:
-            results.append(item)
+            "publish_time": publish_time or "",
+            "source": source,
+            "category": category,
+            "url": entry.get("link", ""),
+        })
 
-    logger.info("Fetched %d news items from 财联社", len(results))
-    return results
+    logger.debug("Feed '%s': %d items", name, len(items))
+    return items
 
 
-def fetch_futu_news(max_items: int = 50) -> list[dict]:
+def _deduplicate(items: list[dict], threshold: float) -> list[dict]:
+    """Remove near-duplicate titles using SequenceMatcher.
+
+    Keeps the first occurrence (earlier in the sorted list).
     """
-    Fetch international market news from 富途 via stock_info_global_futu().
+    if threshold <= 0:
+        return items
 
-    Returns:
-        List of standardized dicts: {title, content, publish_time, source, url}
-    """
-    logger.info("Fetching 富途 news...")
-    try:
-        df = ak.stock_info_global_futu()
-    except Exception as e:
-        logger.error("stock_info_global_futu() failed: %s", e)
-        return []
+    unique = []
+    seen_titles: list[str] = []
 
-    results = []
-    for _, row in df.head(max_items).iterrows():
-        item = {
-            "title": str(row.get("标题", "")),
-            "content": str(row.get("内容", row.get("摘要", "")))[:500],
-            "publish_time": str(row.get("发布时间", "")),
-            "source": "富途",
-            "url": str(row.get("链接", "")),
-        }
-        if item["title"]:
-            results.append(item)
+    for item in items:
+        title = item["title"].lower()
+        is_dup = False
+        for seen in seen_titles:
+            if SequenceMatcher(None, title, seen).ratio() >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            unique.append(item)
+            seen_titles.append(title)
 
-    logger.info("Fetched %d news items from 富途", len(results))
-    return results
+    if len(items) != len(unique):
+        logger.info("Deduplication: %d items → %d unique", len(items), len(unique))
 
-
-def fetch_cctv_news() -> list[dict]:
-    """
-    Fetch CCTV financial news via AKShare (联播).
-
-    Returns:
-        List of standardized dicts: {title, content, publish_time, source, url}
-    """
-    logger.info("Fetching CCTV news...")
-    try:
-        today_str = datetime.now().strftime("%Y%m%d")
-        df = ak.news_cctv(date=today_str)
-    except Exception as e:
-        logger.warning("CCTV news fetch failed: %s", e)
-        return []
-
-    results = []
-    for _, row in df.iterrows():
-        item = {
-            "title": str(row.get("title", "")),
-            "content": str(row.get("content", ""))[:500],
-            "publish_time": today_str,
-            "source": "央视新闻联播",
-            "url": "",
-        }
-        if item["title"]:
-            results.append(item)
-
-    logger.info("Fetched %d CCTV news items", len(results))
-    return results
-
-
-def fetch_economic_calendar() -> list[dict]:
-    """
-    Fetch recent economic data releases (CPI, PMI, etc.).
-
-    Returns:
-        List of dicts with indicator name, value, period, source.
-    """
-    logger.info("Fetching economic data...")
-    econ_data = []
-
-    # Try to fetch recent CPI
-    try:
-        df = ak.macro_china_cpi_yearly()
-        if not df.empty:
-            latest = df.iloc[-1]
-            econ_data.append({
-                "indicator": "CPI同比",
-                "value": str(latest.iloc[-1]),
-                "period": str(latest.iloc[0]),
-                "source": "国家统计局",
-            })
-    except Exception as e:
-        logger.warning("CPI fetch failed: %s", e)
-
-    # Try to fetch recent PMI
-    try:
-        df = ak.macro_china_pmi_yearly()
-        if not df.empty:
-            latest = df.iloc[-1]
-            econ_data.append({
-                "indicator": "制造业PMI",
-                "value": str(latest.iloc[-1]),
-                "period": str(latest.iloc[0]),
-                "source": "国家统计局",
-            })
-    except Exception as e:
-        logger.warning("PMI fetch failed: %s", e)
-
-    # Try GDP growth
-    try:
-        df = ak.macro_china_gdp_yearly()
-        if not df.empty:
-            latest = df.iloc[-1]
-            econ_data.append({
-                "indicator": "GDP同比增速",
-                "value": str(latest.iloc[-1]),
-                "period": str(latest.iloc[0]),
-                "source": "国家统计局",
-            })
-    except Exception as e:
-        logger.warning("GDP fetch failed: %s", e)
-
-    logger.info("Fetched %d economic indicators", len(econ_data))
-    return econ_data
+    return unique
 
 
 def fetch_all_news(config: dict) -> dict:
     """
-    Fetch all news data from multiple sources.
+    Fetch news from all configured RSS feeds.
 
     Args:
-        config: Settings dict
+        config: Settings dict with news.rss_feeds
 
     Returns:
         Dict with keys: market_news, cctv_news, economic_data, fetch_time
+        (cctv_news and economic_data are empty lists for backward compat)
     """
     news_cfg = config.get("news", {})
+    feeds = news_cfg.get("rss_feeds", [])
+    timeout = news_cfg.get("fetch_timeout", 10)
+    max_workers = news_cfg.get("max_workers", 8)
+    max_age_hours = news_cfg.get("max_age_hours", 48)
+    dedup_threshold = news_cfg.get("dedup_threshold", 0.7)
     max_headlines = news_cfg.get("max_headlines", 50)
 
-    # Primary: 东方财富 broad market news
-    em_news = fetch_em_news(max_items=max_headlines)
+    if not feeds:
+        logger.warning("No RSS feeds configured in news.rss_feeds")
+        return {
+            "market_news": [],
+            "cctv_news": [],
+            "economic_data": [],
+            "fetch_time": datetime.now().isoformat(),
+        }
 
-    # Secondary: 财联社 flash news
-    cls_news = fetch_cls_news(max_items=20)
+    # Fetch all feeds in parallel
+    all_items: list[dict] = []
+    success_count = 0
 
-    # Tertiary: 富途 international coverage
-    futu_news = fetch_futu_news(max_items=max_headlines)
-
-    # Combine all market news into a single list
-    market_news = em_news + cls_news + futu_news
-
-    # CCTV policy signals
-    cctv_news = fetch_cctv_news()
-
-    economic_data = fetch_economic_calendar()
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_feed = {
+            executor.submit(_fetch_single_feed, feed, timeout): feed
+            for feed in feeds
+        }
+        for future in as_completed(future_to_feed):
+            feed = future_to_feed[future]
+            try:
+                items = future.result()
+                if items:
+                    all_items.extend(items)
+                    success_count += 1
+            except Exception as e:
+                logger.warning("Feed '%s' raised exception: %s", feed.get("name", "?"), e)
 
     logger.info(
-        "Total news fetched: %d market (%d EM + %d CLS + %d futu), %d CCTV, %d econ",
-        len(market_news), len(em_news), len(cls_news), len(futu_news),
-        len(cctv_news), len(economic_data),
+        "RSS fetch complete: %d/%d feeds successful, %d total items",
+        success_count, len(feeds), len(all_items),
     )
 
+    # Filter by age
+    before_filter = len(all_items)
+    all_items = [item for item in all_items if _is_within_age(item.get("publish_time"), max_age_hours)]
+    if before_filter != len(all_items):
+        logger.info("Age filter: %d items → %d within %dh", before_filter, len(all_items), max_age_hours)
+
+    # Sort by publish time (newest first), items without time go last
+    def sort_key(item: dict) -> str:
+        return item.get("publish_time") or "0000"
+    all_items.sort(key=sort_key, reverse=True)
+
+    # Deduplicate
+    all_items = _deduplicate(all_items, dedup_threshold)
+
+    # Trim to max
+    all_items = all_items[:max_headlines]
+
     return {
-        "market_news": market_news,
-        "cctv_news": cctv_news,
-        "economic_data": economic_data,
+        "market_news": all_items,
+        "cctv_news": [],
+        "economic_data": [],
         "fetch_time": datetime.now().isoformat(),
     }

@@ -22,10 +22,11 @@ SYSTEM_PROMPT = """你是一位专业的中国A股市场分析师，负责撰写
 关键规则：
 1. 你只能使用提供给你的数据来撰写报告，不得编造任何数字或新闻
 2. 所有数字必须与提供的数据完全一致
-3. 如果某项数据缺失，明确注明"数据暂缺"，不要猜测
+3. 如果某项数据缺失，直接跳过该内容，不要提及"数据暂缺"，也不要猜测
 4. 使用专业、简洁的财经语言
 5. 报告使用中文撰写
-6. 每个观点都必须有数据支撑"""
+6. 每个观点都必须有数据支撑
+7. 即使新闻标题中提到了某些数字（如涨停数、连板数），除非这些数字也出现在对应的结构化数据字段中，否则不得将其作为精确统计数据引用。新闻中的数字只能作为新闻引用，必须注明来源。"""
 
 
 def _format_index_data(indices: list[dict]) -> str:
@@ -46,6 +47,9 @@ def _format_index_data(indices: list[dict]) -> str:
 
 def _format_sector_data(sectors: dict) -> str:
     """Format sector performance data."""
+    if not sectors.get("gainers") and not sectors.get("losers"):
+        return "（板块表现数据暂缺，请勿编造板块涨跌信息）"
+
     lines = ["【领涨板块】"]
     for s in sectors.get("gainers", []):
         lines.append(
@@ -67,7 +71,10 @@ def _format_sector_data(sectors: dict) -> str:
 def _format_breadth_data(breadth: dict) -> str:
     """Format market breadth data."""
     if not breadth:
-        return "（市场广度数据暂缺）"
+        return (
+            "（市场广度数据暂缺。严禁从新闻标题推测涨跌家数、涨停跌停数量或连板数据。"
+            '如需提及市场广度，请写\u201c数据暂缺\u201d。）'
+        )
     return (
         f"上涨: {breadth.get('up_count', 'N/A')}家, 下跌: {breadth.get('down_count', 'N/A')}家, "
         f"平盘: {breadth.get('flat_count', 'N/A')}家\n"
@@ -83,7 +90,7 @@ def _format_news_data(news_data: dict) -> str:
     # Use pre-ranked news if available (from news_ranker)
     ranked = news_data.get("ranked_news", [])
     if ranked:
-        lines.append("【以下新闻已按市场影响力预排序】")
+        lines.append("【以下新闻已按市场影响力预排序，原文为英文，请在报告中用中文概述】")
         for i, item in enumerate(ranked, 1):
             reason = item.get("llm_reason", "")
             reason_str = f" | 理由: {reason}" if reason else ""
@@ -94,6 +101,7 @@ def _format_news_data(news_data: dict) -> str:
             )
     else:
         # Fallback: use raw market_news if ranking wasn't run
+        lines.append("【以下新闻原文为英文，请在报告中用中文概述】")
         for item in news_data.get("market_news", [])[:10]:
             lines.append(f"- [{item['source']}] {item['title']}")
             if item.get("content"):
@@ -116,6 +124,24 @@ def _format_pboc_data(pboc_data: dict) -> str:
         return "（央行货币市场数据暂缺）"
 
     lines = [f"数据日期: {pboc_data['date']}"]
+
+    # OMO (Open Market Operations)
+    omo = pboc_data.get("omo", {})
+    if omo.get("has_data"):
+        lines.append(f"\n【公开市场操作公告】")
+        lines.append(f"公告: {omo.get('title', '')}")
+        lines.append(f"操作类型: {omo.get('op_type', '未知')}")
+        for op in omo.get("operations", []):
+            parts = [f"期限: {op['tenor']}", f"利率: {op['rate']:.2f}%"]
+            if op.get("bid_amount") is not None:
+                parts.append(f"投放量: {op['bid_amount']:.1f}亿元")
+            if op.get("win_amount") is not None:
+                parts.append(f"中标量: {op['win_amount']:.1f}亿元")
+            lines.append(f"- {', '.join(parts)}")
+        lines.append(f"合计投放: {omo.get('total_amount', 0):.1f}亿元")
+        lines.append(f"来源: {omo.get('url', '')}")
+    else:
+        lines.append("\n【公开市场操作公告】今日无公开市场操作公告")
 
     # Repo rates
     repo = pboc_data.get("repo_rates", {})
@@ -148,6 +174,33 @@ def _format_pboc_data(pboc_data: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_missing_data_warnings(market_data: dict, news_data: dict, pboc_data: dict) -> str:
+    """Scan all data dicts and build a consolidated warning block for missing fields."""
+    warnings = []
+
+    if not market_data.get("indices"):
+        warnings.append("- 主要指数数据缺失：跳过指数相关内容，勿编造")
+    if not market_data.get("breadth"):
+        warnings.append("- 市场广度数据缺失：跳过涨跌家数、涨停跌停相关内容，勿编造")
+    sectors = market_data.get("sectors", {})
+    if not sectors.get("gainers") and not sectors.get("losers"):
+        warnings.append("- 板块表现数据缺失：跳过板块涨跌相关内容，勿编造")
+    if not news_data.get("market_news") and not news_data.get("ranked_news"):
+        warnings.append("- 市场新闻数据缺失：跳过新闻相关内容，勿编造")
+    if not news_data.get("economic_data"):
+        warnings.append("- 经济数据缺失：跳过CPI、PMI、GDP等经济指标，勿编造或提及暂缺")
+    if not pboc_data.get("has_data"):
+        warnings.append("- 央行公开市场操作数据缺失：跳过逆回购相关内容，勿编造")
+    elif not pboc_data.get("omo", {}).get("has_data"):
+        warnings.append("- 今日无央行公开市场操作公告：可简要注明今日无操作公告，勿编造操作金额")
+
+    if not warnings:
+        return ""
+
+    header = '⚠️ 以下数据字段缺失，对应内容严禁编造，直接跳过即可，不要在报告中提及"数据暂缺"：\n'
+    return header + "\n".join(warnings) + "\n\n"
+
+
 def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict) -> str:
     """
     Build the full generation prompt with all data attached.
@@ -157,12 +210,14 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
     """
     today_str = datetime.now().strftime("%Y年%m月%d日")
 
+    missing_warnings = _build_missing_data_warnings(market_data, news_data, pboc_data)
+
     prompt = f"""请根据以下数据撰写{today_str}的A股每日市场报告。报告必须包含以下四个部分。
 所有数字和事实必须严格来源于下方提供的数据，不得编造。
 
 ===== 原始数据 =====
 
-【一、主要指数行情】
+{missing_warnings}【一、主要指数行情】
 {_format_index_data(market_data.get('indices', []))}
 
 【市场广度】
@@ -192,7 +247,7 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 以下是按市场影响力预选的重要新闻，请对排名靠前的2-3条进行深入解读分析
 - 不得引用或编造未在上方数据中出现的新闻
 - 分析对A股市场的潜在影响
-- 如有经济数据发布，进行解读
+- 仅当上方数据中包含经济数据时才进行解读，否则直接跳过，不要提及缺失
 - 字数：200-400字
 
 ## 三、央行逆回购 (公开市场操作)
@@ -208,7 +263,7 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 
 注意：
 - 所有数字必须与提供的数据一致
-- 如果某项数据不足以支撑分析，请注明
+- 如果某项数据缺失或不足以支撑分析，直接跳过，不需要提及缺失
 - 使用专业财经术语
 - 语气客观中立"""
 
@@ -220,6 +275,7 @@ def generate_report(
     news_data: dict,
     pboc_data: dict,
     config: dict,
+    regeneration_hints: list[str] | None = None,
 ) -> dict:
     """
     Generate the daily market report using Claude API.
@@ -229,6 +285,7 @@ def generate_report(
         news_data: Output from news.fetch_all_news()
         pboc_data: Output from pboc.fetch_pboc_data()
         config: Settings dict
+        regeneration_hints: If provided, specific fact-check failures to fix
 
     Returns:
         Dict with 'report_text', 'model', 'usage', 'prompt_data'
@@ -241,6 +298,14 @@ def generate_report(
     api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     prompt = build_generation_prompt(market_data, news_data, pboc_data)
+
+    if regeneration_hints:
+        hint_lines = "\n".join(f"- {h}" for h in regeneration_hints)
+        prompt += (
+            f"\n\n===== 重要：上一次生成的报告被事实核查驳回 =====\n"
+            f"请特别注意修正以下问题：\n{hint_lines}\n"
+            f"严格使用上方提供的结构化数据，不得从新闻标题推测数字。"
+        )
 
     logger.info("Generating report with model=%s, max_tokens=%d", model, max_tokens)
 

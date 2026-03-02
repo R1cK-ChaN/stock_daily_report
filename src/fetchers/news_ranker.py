@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import openai
@@ -21,60 +21,79 @@ logger = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────────────────────
-# Keyword Dictionary (5 tiers + noise)
+# Keyword Dictionary (5 tiers + noise) — English
 # ────────────────────────────────────────────────────────────
 
 KEYWORD_TIERS = {
     # Tier 1 (weight 10): Monetary/fiscal policy
     10: [
-        "央行", "降准", "降息", "加息", "LPR", "MLF", "逆回购", "SLF", "PSL",
-        "国务院", "证监会", "银保监", "金融委", "财政部", "发改委",
-        "货币政策", "财政政策", "公开市场", "再贷款", "存款准备金",
+        "federal reserve", "fed", "fomc", "rate cut", "rate hike",
+        "pboc", "ecb", "boj", "central bank", "monetary policy",
+        "state council", "csrc", "stimulus",
     ],
     # Tier 2 (weight 8): Economic data
     8: [
-        "GDP", "CPI", "PPI", "PMI", "社融", "M1", "M2", "信贷",
-        "进出口", "贸易顺差", "贸易逆差", "外汇储备", "失业率",
-        "工业增加值", "固定资产投资", "社会消费品零售",
+        "gdp", "cpi", "ppi", "pmi", "nonfarm", "unemployment",
+        "inflation", "trade deficit", "trade surplus", "retail sales",
+        "m1", "m2",
     ],
-    # Tier 3 (weight 6): Market structure
+    # Tier 3 (weight 6): Market structure / China flows
     6: [
-        "北向资金", "南向资金", "外资", "涨停", "跌停", "熔断",
-        "IPO", "ETF", "注册制", "退市", "增持", "减持", "回购",
-        "融资融券", "两融", "大宗交易", "股权质押", "解禁",
+        "northbound", "stock connect", "qfii", "a-shares", "ipo",
+        "etf", "tariff", "sanctions", "trade war", "margin",
+        "short selling",
     ],
     # Tier 4 (weight 4): Hot sectors
     4: [
-        "新能源", "光伏", "锂电", "半导体", "芯片", "AI", "人工智能",
-        "房地产", "地产", "医药", "消费", "白酒", "军工", "国防",
-        "数字经济", "数据要素", "碳中和", "储能", "氢能",
+        "semiconductor", "chip", "ai", "ev", "battery", "lithium",
+        "solar", "real estate", "pharma", "oil", "crude", "gold",
+        "copper",
     ],
     # Tier 5 (weight 3): Bellwether companies
     3: [
-        "茅台", "宁德时代", "比亚迪", "中芯国际", "腾讯", "阿里",
-        "华为", "中国平安", "招商银行", "工商银行", "中国石油",
-        "隆基", "药明康德", "迈瑞", "海康威视",
+        "byd", "catl", "alibaba", "tencent", "huawei", "apple",
+        "nvidia", "tsmc", "tesla", "kweichow moutai",
     ],
 }
 
 # Noise keywords (penalty -5)
 NOISE_KEYWORDS = [
-    "捐赠", "慈善", "体育", "娱乐", "招聘", "校招", "广告",
-    "综艺", "明星", "八卦", "选秀", "真人秀",
+    "donation", "charity", "sports", "entertainment", "celebrity",
+    "recruitment", "advertisement", "reality show",
 ]
 
-# Source credibility multipliers
+# Source credibility multipliers (partial-match keys)
 SOURCE_MULTIPLIERS = {
-    "央视新闻联播": 1.4,
-    "财联社": 1.2,
-    "东方财富": 1.0,
-    "富途": 1.0,
+    "federal reserve": 1.5,
+    "wsj": 1.3,
+    "wall street journal": 1.3,
+    "reuters": 1.3,
+    "bloomberg": 1.3,
+    "ecb": 1.3,
+    "cnbc": 1.2,
+    "scmp": 1.2,
+    "south china morning post": 1.2,
+    "xinhua": 1.1,
+    "china daily": 1.1,
+    "cgtn": 1.0,
+    "bbc": 1.1,
+    "nikkei": 1.1,
+    "yahoo": 1.0,
 }
+
+
+def _get_source_multiplier(source: str) -> float:
+    """Look up source multiplier via case-insensitive partial match."""
+    source_lower = source.lower()
+    for key, mult in SOURCE_MULTIPLIERS.items():
+        if key in source_lower:
+            return mult
+    return 1.0
 
 
 def _compute_keyword_score(title: str, content: str) -> float:
     """Compute keyword-based relevance score for a single news item."""
-    text = title + " " + content
+    text = (title + " " + content).lower()
     score = 0.0
     tier1_matches = 0
 
@@ -104,6 +123,20 @@ def _compute_recency_multiplier(publish_time: str) -> float:
 
     now = datetime.now()
     today = now.date()
+
+    # Try ISO 8601 first (from RSS feeds)
+    try:
+        dt = datetime.fromisoformat(publish_time)
+        pub_date = dt.date()
+        delta = (today - pub_date).days
+        if delta <= 0:
+            return 1.0
+        elif delta == 1:
+            return 0.7
+        else:
+            return 0.4
+    except (ValueError, TypeError):
+        pass
 
     # Try various date formats
     for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y%m%d"]:
@@ -143,7 +176,7 @@ def keyword_rank(news_items: list[dict], top_n: int = 10) -> list[dict]:
     scored = []
     for item in news_items:
         base_score = _compute_keyword_score(item.get("title", ""), item.get("content", ""))
-        source_mult = SOURCE_MULTIPLIERS.get(item.get("source", ""), 1.0)
+        source_mult = _get_source_multiplier(item.get("source", ""))
         recency_mult = _compute_recency_multiplier(item.get("publish_time", ""))
 
         final_score = base_score * source_mult * recency_mult
@@ -183,7 +216,7 @@ def llm_rank(
 
     titles_text = "\n".join(title_lines)
 
-    prompt = f"""请对以下新闻按A股市场影响力从高到低排序。
+    prompt = f"""请对以下英文新闻按A股市场影响力从高到低排序。
 评判标准：宏观政策 > 经济数据 > 行业政策 > 个股事件
 只返回前{top_n}条，JSON格式：[{{"rank": 1, "id": N, "reason": "10字理由"}}, ...]
 

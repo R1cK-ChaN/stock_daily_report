@@ -49,15 +49,57 @@ validation:
 
 # News settings
 news:
-  max_headlines: 50          # Fetch more since we have better sources
+  max_headlines: 80
   select_top_n: 5
-  sources:
-    - "eastmoney_global"     # 东方财富 (stock_info_global_em)
-    - "cls"                  # 财联社 (stock_info_global_cls)
-    - "futu"                 # 富途 (stock_info_global_futu)
+  fetch_timeout: 10
+  max_workers: 10
+  max_age_hours: 48
+  dedup_threshold: 0.7
+
+  rss_feeds:
+    # Markets (7)
+    - {name: "CNBC", url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", category: "markets"}
+    - {name: "Yahoo Finance", url: "https://finance.yahoo.com/rss/topstories", category: "markets"}
+    - {name: "Reuters Markets", url: "https://news.google.com/rss/search?q=site:reuters.com+markets+stocks+when:1d&hl=en-US&gl=US&ceid=US:en", category: "markets"}
+    - {name: "Bloomberg Markets", url: "https://news.google.com/rss/search?q=site:bloomberg.com+markets+when:1d&hl=en-US&gl=US&ceid=US:en", category: "markets"}
+    - {name: "WSJ Markets", url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", category: "markets"}
+    - {name: "BBC Business", url: "https://feeds.bbci.co.uk/news/business/rss.xml", category: "markets"}
+    - {name: "Nikkei Asia", url: "https://asia.nikkei.com/rss/feed/nar", category: "markets"}
+    # Central Banks (4)
+    - {name: "Federal Reserve", url: "https://www.federalreserve.gov/feeds/press_all.xml", category: "central_banks"}
+    - {name: "ECB Press", url: "https://www.ecb.europa.eu/rss/press.html", category: "central_banks"}
+    - {name: "PBoC Watch", url: "https://news.google.com/rss/search?q=(PBOC+OR+%22People's+Bank+of+China%22)+when:7d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
+    - {name: "Global Central Banks", url: "https://news.google.com/rss/search?q=%22rate+hike%22+OR+%22rate+cut%22+OR+%22interest+rate+decision%22+central+bank+when:3d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
+    # Economic (3)
+    - {name: "WSJ Economy", url: "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed", category: "economic"}
+    - {name: "Economic Data", url: "https://news.google.com/rss/search?q=CPI+OR+inflation+OR+GDP+OR+%22jobs+report%22+OR+%22nonfarm+payrolls%22+OR+PMI+when:2d&hl=en-US&gl=US&ceid=US:en", category: "economic"}
+    - {name: "Trade & Tariffs", url: "https://news.google.com/rss/search?q=tariff+OR+%22trade+war%22+OR+%22trade+deficit%22+OR+sanctions+when:2d&hl=en-US&gl=US&ceid=US:en", category: "economic"}
+    # Commodities (2)
+    - {name: "Oil & Gas", url: "https://news.google.com/rss/search?q=oil+price+OR+OPEC+OR+%22natural+gas%22+OR+%22crude+oil%22+OR+WTI+OR+Brent+when:1d&hl=en-US&gl=US&ceid=US:en", category: "commodities"}
+    - {name: "Gold & Metals", url: "https://news.google.com/rss/search?q=%22gold+price%22+OR+%22silver+price%22+OR+%22copper+futures%22+OR+%22precious+metals%22+when:2d&hl=en-US&gl=US&ceid=US:en", category: "commodities"}
+    # Forex (2)
+    - {name: "Forex News", url: "https://news.google.com/rss/search?q=%22forex%22+OR+%22currency%22+OR+%22FX+market%22+trading+when:1d&hl=en-US&gl=US&ceid=US:en", category: "forex"}
+    - {name: "Dollar Watch", url: "https://news.google.com/rss/search?q=%22dollar+index%22+OR+DXY+OR+%22US+dollar%22+yuan+when:2d&hl=en-US&gl=US&ceid=US:en", category: "forex"}
+    # Analysis (2)
+    - {name: "Market Outlook", url: "https://news.google.com/rss/search?q=%22stock+market+outlook%22+OR+%22Wall+Street+outlook%22+OR+%22bull+market%22+OR+%22bear+market%22+when:3d&hl=en-US&gl=US&ceid=US:en", category: "analysis"}
+    - {name: "Bank Research", url: "https://news.google.com/rss/search?q=%22Goldman+Sachs%22+OR+%22JPMorgan%22+OR+%22Morgan+Stanley%22+forecast+OR+outlook+when:3d&hl=en-US&gl=US&ceid=US:en", category: "analysis"}
+    # China (12)
+    - {name: "SCMP China Economy", url: "https://www.scmp.com/rss/318421/feed", category: "china"}
+    - {name: "SCMP China", url: "https://www.scmp.com/rss/4/feed", category: "china"}
+    - {name: "SCMP Business", url: "https://www.scmp.com/rss/92/feed", category: "china"}
+    - {name: "Xinhua China", url: "http://www.xinhuanet.com/english/rss/chinarss.xml", category: "china"}
+    - {name: "Xinhua Business", url: "http://www.xinhuanet.com/english/rss/businessrss.xml", category: "china"}
+    - {name: "China Daily BizChina", url: "https://www.chinadaily.com.cn/rss/bizchina_rss.xml", category: "china"}
+    - {name: "China Daily News", url: "https://www.chinadaily.com.cn/rss/china_rss.xml", category: "china"}
+    - {name: "CGTN Business", url: "https://www.cgtn.com/subscribe/rss/section/business.xml", category: "china"}
+    - {name: "China Trade Watch", url: "https://news.google.com/rss/search?q=China+trade+OR+%22China+tariff%22+OR+%22US+China%22+trade+when:2d&hl=en-US&gl=US&ceid=US:en", category: "china"}
+    - {name: "China Markets", url: "https://news.google.com/rss/search?q=%22Shanghai+composite%22+OR+%22Hang+Seng%22+OR+%22CSI+300%22+OR+%22A-shares%22+OR+%22H-shares%22+when:2d&hl=en-US&gl=US&ceid=US:en", category: "china"}
+    - {name: "China Tech", url: "https://news.google.com/rss/search?q=Alibaba+OR+Tencent+OR+BYD+OR+Huawei+OR+Xiaomi+stock+OR+earnings+OR+regulation+when:3d&hl=en-US&gl=US&ceid=US:en", category: "china"}
+    - {name: "China Policy", url: "https://news.google.com/rss/search?q=%22China+GDP%22+OR+%22China+PMI%22+OR+%22China+CPI%22+OR+%22China+stimulus%22+OR+%22NPC%22+OR+%22NDRC%22+when:3d&hl=en-US&gl=US&ceid=US:en", category: "china"}
+
   ranking:
-    keyword_top_n: 10        # Stage A: keyword scoring keeps top 10
-    llm_top_n: 5             # Stage B: LLM re-ranks to top 5
+    keyword_top_n: 10
+    llm_top_n: 5
     llm_ranking_enabled: true
     llm_max_tokens: 300
 
@@ -70,6 +112,13 @@ sectors:
 output:
   directory: "output"
   filename_format: "daily_report_{date}.md"
+
+# PBOC open market operations
+pboc:
+  rsshub_base_url: ""  # Optional: self-hosted RSSHub URL (e.g. "https://rsshub.example.com")
+  listing_url: "https://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125431/125475/index.html"
+  base_url: "https://www.pbc.gov.cn"
+  request_timeout: 15
 
 # WeChat delivery
 wechat:
