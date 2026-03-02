@@ -90,7 +90,7 @@ def _format_news_data(news_data: dict) -> str:
     # Use pre-ranked news if available (from news_ranker)
     ranked = news_data.get("ranked_news", [])
     if ranked:
-        lines.append("【以下新闻已按市场影响力预排序，原文为英文，请在报告中用中文概述】")
+        lines.append("【以下新闻已按市场影响力预排序，原文为英文，请在报告中用中文概述要点，不要提及新闻来源名称】")
         for i, item in enumerate(ranked, 1):
             reason = item.get("llm_reason", "")
             reason_str = f" | 理由: {reason}" if reason else ""
@@ -101,7 +101,7 @@ def _format_news_data(news_data: dict) -> str:
             )
     else:
         # Fallback: use raw market_news if ranking wasn't run
-        lines.append("【以下新闻原文为英文，请在报告中用中文概述】")
+        lines.append("【以下新闻原文为英文，请在报告中用中文概述要点，不要提及新闻来源名称】")
         for item in news_data.get("market_news", [])[:10]:
             lines.append(f"- [{item['source']}] {item['title']}")
             if item.get("content"):
@@ -245,6 +245,7 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 
 ## 二、基本面分析 (重要新闻与经济数据)
 - 以下是按市场影响力预选的重要新闻，请对排名靠前的2-3条进行深入解读分析
+- 直接陈述新闻事实，不要提及或引用新闻来源名称（如"据XX报道"）
 - 不得引用或编造未在上方数据中出现的新闻
 - 分析对A股市场的潜在影响
 - 仅当上方数据中包含经济数据时才进行解读，否则直接跳过，不要提及缺失
