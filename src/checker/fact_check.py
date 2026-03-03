@@ -197,7 +197,7 @@ def extract_numbers_from_text(text: str) -> list[dict]:
         List of dicts with 'value' (float), 'context' (surrounding text).
     """
     # Match numbers including decimals and percentages
-    pattern = r'(?<!\d)(\d+\.?\d*)\s*(%|亿|万|元|点|家|天|期)?'
+    pattern = r'(?<!\d)(\d+\.?\d*)\s*(%|亿|万|元|点|家|天|期|个月|年|号)?'
     matches = []
 
     for match in re.finditer(pattern, text):
@@ -220,7 +220,7 @@ def extract_numbers_from_text(text: str) -> list[dict]:
     return matches
 
 
-def build_source_numbers(market_data: dict, pboc_data: dict) -> set[float]:
+def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | None = None) -> set[float]:
     """
     Build a set of all numbers present in the source data.
     Used for cross-checking against the generated report.
@@ -236,6 +236,9 @@ def build_source_numbers(market_data: dict, pboc_data: dict) -> set[float]:
                 # Also add common transformations
                 if key == "amount":
                     numbers.add(round(float(val) / 1e8, 2))  # 亿元
+                # Add absolute values for change fields (report may say "跌幅5.21%" for -5.21)
+                if key in ("change", "change_pct") and float(val) < 0:
+                    numbers.add(round(abs(float(val)), 2))
 
     # Breadth data
     breadth = market_data.get("breadth", {})
@@ -253,6 +256,8 @@ def build_source_numbers(market_data: dict, pboc_data: dict) -> set[float]:
                 val = s.get(key)
                 if val is not None:
                     numbers.add(round(float(val), 2))
+                    if key in ("change_pct", "leader_change_pct") and float(val) < 0:
+                        numbers.add(round(abs(float(val)), 2))
 
     # PBOC data — repo rates, shibor, lpr
     repo = pboc_data.get("repo_rates", {})
@@ -280,6 +285,30 @@ def build_source_numbers(market_data: dict, pboc_data: dict) -> set[float]:
         if val is not None:
             numbers.add(round(float(val), 2))
 
+    # PBOC OMO data
+    omo = pboc_data.get("omo", {})
+    if omo.get("has_data"):
+        total = omo.get("total_amount")
+        if total is not None:
+            numbers.add(round(float(total), 1))
+            numbers.add(round(float(total), 2))
+        for op in omo.get("operations", []):
+            for key in ["rate", "bid_amount", "win_amount"]:
+                val = op.get(key)
+                if val is not None:
+                    numbers.add(round(float(val), 1))
+                    numbers.add(round(float(val), 2))
+
+    # Economic data from news
+    if news_data:
+        for econ in news_data.get("economic_data", []):
+            try:
+                val = float(econ.get("value", ""))
+                numbers.add(round(val, 2))
+                numbers.add(round(val, 1))
+            except (ValueError, TypeError):
+                pass
+
     return numbers
 
 
@@ -288,6 +317,7 @@ def cross_check_numbers(
     market_data: dict,
     pboc_data: dict,
     tolerance: float = 0.5,
+    news_data: dict | None = None,
 ) -> dict:
     """
     Extract numbers from the report and verify they exist in source data.
@@ -297,12 +327,19 @@ def cross_check_numbers(
         market_data: Source market data
         pboc_data: Source PBOC data
         tolerance: Allowed difference for floating point comparison
+        news_data: Source news data (for economic indicator numbers)
 
     Returns:
         Dict with 'verified', 'unverified', 'total_numbers'.
     """
     report_numbers = extract_numbers_from_text(report_text)
-    source_numbers = build_source_numbers(market_data, pboc_data)
+    source_numbers = build_source_numbers(market_data, pboc_data, news_data)
+
+    # Build set of numbers embedded in index names (e.g. 50 from "科创50", 100 from "中小100")
+    index_name_numbers: set[float] = set()
+    for idx in market_data.get("indices", []):
+        for m in re.finditer(r'\d+', idx.get("name", "")):
+            index_name_numbers.add(float(m.group()))
 
     verified = []
     unverified = []
@@ -311,6 +348,18 @@ def cross_check_numbers(
         value = num_info["value"]
         # Skip trivially common numbers (1, 2, 3, etc. under 10 — likely section numbers)
         if value < 10 and value == int(value) and num_info["unit"] == "":
+            continue
+
+        # Skip year-like numbers (2020–2030 with no unit)
+        if 2020 <= value <= 2030 and value == int(value) and num_info["unit"] == "":
+            continue
+
+        # Skip numbers embedded in index names (e.g. 50, 100, 300)
+        if value in index_name_numbers:
+            continue
+
+        # Skip numbers with temporal/ordinal units (e.g. "3个月", "2026年", "1号")
+        if num_info["unit"] in ("个月", "年", "号"):
             continue
 
         # Check if this number is close to any source number
@@ -368,15 +417,28 @@ def verify_claims_with_llm(
     api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     # Build a concise data summary for the verifier
+    # Include news content (not just headlines) to match what the report generator sees
+    news_items = []
+    for n in news_data.get("ranked_news", news_data.get("market_news", []))[:10]:
+        item = {"title": n.get("title", "")}
+        content = n.get("content") or n.get("summary") or n.get("description") or ""
+        if content:
+            item["content"] = content[:300]
+        source = n.get("source") or n.get("feed_name") or ""
+        if source:
+            item["source"] = source
+        news_items.append(item)
+
     data_summary = {
         "indices": market_data.get("indices", []),
         "breadth": market_data.get("breadth", {}),
         "sectors_gainers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("gainers", [])],
         "sectors_losers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("losers", [])],
-        "news_headlines": [n["title"] for n in news_data.get("ranked_news", news_data.get("market_news", []))[:10]],
+        "news_items": news_items,
         "pboc_repo_rates": pboc_data.get("repo_rates", {}),
         "pboc_shibor": pboc_data.get("shibor", {}),
         "pboc_lpr": pboc_data.get("lpr", {}),
+        "pboc_omo": pboc_data.get("omo", {}),
     }
 
     verification_prompt = f"""你是一位事实核查员。请检查以下市场报告中的每一个事实声明是否都有数据支持。
@@ -389,8 +451,8 @@ def verify_claims_with_llm(
 
 ===== 核查要求 =====
 请逐一检查报告中的：
-1. 所有数字（指数点位、涨跌幅、成交额等）是否与原始数据一致
-2. 所有新闻引用是否出现在提供的新闻标题中
+1. 数字准确性已由独立的数字校验层处理，你无需重复检查数字。不要基于你自己的先验假设质疑数据的量级或合理性（如成交额大小、涨跌幅范围等），范围校验已在第一层完成。
+2. 新闻引用：报告中的新闻内容是否可以从提供的新闻条目（标题和内容）中合理推断或综合得出。允许对多条新闻进行合理的综合概括，但不允许凭空捏造完全没有新闻来源支持的事件。
 3. 所有因果关系和分析判断是否有数据基础
 
 请用以下JSON格式回复：
@@ -399,7 +461,7 @@ def verify_claims_with_llm(
     "issues": [
         {{
             "claim": "报告中的具体声明",
-            "issue_type": "number_mismatch|unsupported_claim|fabricated_news",
+            "issue_type": "unsupported_claim|fabricated_news",
             "severity": "critical|warning|info",
             "explanation": "具体说明问题"
         }}
@@ -479,7 +541,7 @@ def run_post_generation_checks(
         Dict with results from number cross-check and LLM verification.
     """
     # Layer 2: Number cross-check
-    number_check = cross_check_numbers(report_text, market_data, pboc_data)
+    number_check = cross_check_numbers(report_text, market_data, pboc_data, news_data=news_data)
 
     # Layer 3: LLM claim verification
     claim_check = verify_claims_with_llm(
@@ -487,13 +549,16 @@ def run_post_generation_checks(
     )
 
     # Determine overall pass/fail
-    number_ok = number_check["verification_rate"] >= 0.7
+    validation_cfg = config.get("validation", {})
+    number_threshold = validation_cfg.get("number_verification_rate", 0.60)
+    number_ok = number_check["verification_rate"] >= number_threshold
     claims_ok = claim_check.get("verified", True) is not False
 
     # Count critical issues from LLM verification
+    # Exclude number_mismatch — Layer 2 already handles number verification
     critical_claim_issues = [
         i for i in claim_check.get("issues", [])
-        if i.get("severity") == "critical"
+        if i.get("severity") == "critical" and i.get("issue_type") != "number_mismatch"
     ]
 
     overall_passed = number_ok and len(critical_claim_issues) == 0

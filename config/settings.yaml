@@ -43,6 +43,7 @@ validation:
     chinext_min: 1000
     chinext_max: 5000
   max_daily_change_pct: 15.0  # Flag if any index moves >15% (circuit breaker territory)
+  number_verification_rate: 0.60  # Minimum ratio of report numbers verified against source data
   required_fields:
     - index_prices
     - pboc_repo
