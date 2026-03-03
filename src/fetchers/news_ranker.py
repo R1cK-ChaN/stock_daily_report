@@ -308,6 +308,11 @@ def rank_news(news_data: dict, config: dict) -> dict:
     for item in keyword_top[:5]:
         logger.info("  [%.1f] %s", item["keyword_score"], item["title"][:60])
 
+    # Stage A.5: Enrich top items with full article content
+    if config.get("news", {}).get("article_fetch_enabled", True):
+        from src.fetchers.article_fetcher import enrich_articles
+        keyword_top = enrich_articles(keyword_top, config)
+
     # Stage B: LLM re-ranking (optional)
     if llm_enabled and keyword_top:
         logger.info("Stage B: LLM re-ranking top %d → top %d", len(keyword_top), llm_top_n)

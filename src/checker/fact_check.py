@@ -197,7 +197,7 @@ def extract_numbers_from_text(text: str) -> list[dict]:
         List of dicts with 'value' (float), 'context' (surrounding text).
     """
     # Match numbers including decimals and percentages
-    pattern = r'(?<!\d)(\d+\.?\d*)\s*(%|亿|万|元|点|家|天|期|个月|年|号)?'
+    pattern = r'(?<!\d)(\d+\.?\d*)\s*(%|亿|万|元|点|家|天|日|月|周|期|个月|年|号)?'
     matches = []
 
     for match in re.finditer(pattern, text):
@@ -236,6 +236,7 @@ def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | N
                 # Also add common transformations
                 if key == "amount":
                     numbers.add(round(float(val) / 1e8, 2))  # 亿元
+                    numbers.add(round(float(val) / 1e12, 2))  # 万亿元
                 # Add absolute values for change fields (report may say "跌幅5.21%" for -5.21)
                 if key in ("change", "change_pct") and float(val) < 0:
                     numbers.add(round(abs(float(val)), 2))
@@ -247,7 +248,8 @@ def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | N
         if val is not None:
             numbers.add(round(float(val), 2))
             if key == "total_amount":
-                numbers.add(round(float(val) / 1e8, 2))
+                numbers.add(round(float(val) / 1e8, 2))  # 亿元
+                numbers.add(round(float(val) / 1e12, 2))  # 万亿元
 
     # Sector data
     for direction in ["gainers", "losers"]:
@@ -358,8 +360,8 @@ def cross_check_numbers(
         if value in index_name_numbers:
             continue
 
-        # Skip numbers with temporal/ordinal units (e.g. "3个月", "2026年", "1号")
-        if num_info["unit"] in ("个月", "年", "号"):
+        # Skip numbers with temporal/ordinal units (e.g. "3个月", "2026年", "1号", "7天期")
+        if num_info["unit"] in ("天", "日", "月", "个月", "年", "号", "期", "周"):
             continue
 
         # Check if this number is close to any source number

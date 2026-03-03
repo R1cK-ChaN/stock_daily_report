@@ -29,6 +29,14 @@ SYSTEM_PROMPT = """你是一位专业的中国A股市场分析师，负责撰写
 7. 即使新闻标题中提到了某些数字（如涨停数、连板数），除非这些数字也出现在对应的结构化数据字段中，否则不得将其作为精确统计数据引用。新闻中的数字只能作为新闻引用，必须注明来源。"""
 
 
+def _fmt_amount(yuan: float) -> str:
+    """Format an amount in yuan to 亿元 or 万亿元."""
+    yi = yuan / 1e8
+    if yi >= 10000:
+        return f"{yuan / 1e12:.2f}万亿元"
+    return f"{yi:.2f}亿元"
+
+
 def _format_index_data(indices: list[dict]) -> str:
     """Format index data into a readable string for the prompt."""
     if not indices:
@@ -40,7 +48,7 @@ def _format_index_data(indices: list[dict]) -> str:
         lines.append(
             f"- {idx['name']}: {idx['close']:.2f} {direction} "
             f"{idx['change_pct']:+.2f}% (涨跌额: {idx['change']:+.2f}, "
-            f"成交额: {idx['amount']/1e8:.2f}亿元)"
+            f"成交额: {_fmt_amount(idx['amount'])})"
         )
     return "\n".join(lines)
 
@@ -79,7 +87,7 @@ def _format_breadth_data(breadth: dict) -> str:
         f"上涨: {breadth.get('up_count', 'N/A')}家, 下跌: {breadth.get('down_count', 'N/A')}家, "
         f"平盘: {breadth.get('flat_count', 'N/A')}家\n"
         f"涨停: {breadth.get('limit_up', 'N/A')}家, 跌停: {breadth.get('limit_down', 'N/A')}家\n"
-        f"两市总成交额: {breadth.get('total_amount', 0)/1e8:.2f}亿元"
+        f"两市总成交额: {_fmt_amount(breadth.get('total_amount', 0))}"
     )
 
 

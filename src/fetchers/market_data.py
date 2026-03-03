@@ -16,8 +16,8 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
+MAX_RETRIES = 4
+RETRY_DELAY = 3  # seconds
 
 
 def _retry(func, *args, **kwargs):
@@ -110,45 +110,90 @@ def fetch_index_quotes(indices: list[dict]) -> list[dict]:
 
 
 def fetch_sector_performance(top_n_gainers: int = 5, top_n_losers: int = 5) -> dict:
-    """Fetch sector/industry performance rankings."""
+    """Fetch sector/industry performance rankings.
+
+    Primary: 东方财富 (stock_board_industry_name_em).
+    Fallback: 同花顺 (stock_board_industry_summary_ths) when EM is down.
+    """
     logger.info("Fetching sector performance...")
+
+    # --- Primary: 东方财富 (EM) ---
     try:
         df = _retry(ak.stock_board_industry_name_em)
+        df = df.sort_values("涨跌幅", ascending=False)
+
+        def row_to_dict(row):
+            return {
+                "name": row.get("板块名称", ""),
+                "change_pct": float(row.get("涨跌幅", 0)),
+                "turnover_rate": float(row.get("换手率", 0)) if pd.notna(row.get("换手率")) else 0,
+                "amount": float(row.get("总成交额", 0)) if pd.notna(row.get("总成交额")) else 0,
+                "leader_stock": row.get("领涨股票", ""),
+                "leader_change_pct": float(row.get("领涨股票-涨跌幅", 0)) if pd.notna(row.get("领涨股票-涨跌幅")) else 0,
+                "num_up": int(row.get("上涨家数", 0)) if pd.notna(row.get("上涨家数")) else 0,
+                "num_down": int(row.get("下跌家数", 0)) if pd.notna(row.get("下跌家数")) else 0,
+            }
+
+        gainers = [row_to_dict(row) for _, row in df.head(top_n_gainers).iterrows()]
+        losers = [row_to_dict(row) for _, row in df.tail(top_n_losers).iterrows()]
+        losers.reverse()
+
+        logger.info("Fetched sector performance: %d gainers, %d losers", len(gainers), len(losers))
+        return {"gainers": gainers, "losers": losers}
     except Exception as e:
-        logger.error("Failed to fetch sector data: %s", e)
+        logger.warning("EM sectors failed (%s), trying THS fallback...", e)
+
+    # --- Fallback: 同花顺 (THS) ---
+    try:
+        df = _retry(ak.stock_board_industry_summary_ths)
+        df = df.sort_values("涨跌幅", ascending=False)
+
+        def _ths_row_to_dict(row):
+            return {
+                "name": row.get("板块", ""),
+                "change_pct": float(row.get("涨跌幅", 0)),
+                "turnover_rate": 0,
+                "amount": float(row.get("总成交额", 0)) if pd.notna(row.get("总成交额")) else 0,
+                "leader_stock": row.get("领涨股", ""),
+                "leader_change_pct": float(row.get("领涨股-涨跌幅", 0)) if pd.notna(row.get("领涨股-涨跌幅")) else 0,
+                "num_up": int(row.get("上涨家数", 0)) if pd.notna(row.get("上涨家数")) else 0,
+                "num_down": int(row.get("下跌家数", 0)) if pd.notna(row.get("下跌家数")) else 0,
+            }
+
+        gainers = [_ths_row_to_dict(row) for _, row in df.head(top_n_gainers).iterrows()]
+        losers = [_ths_row_to_dict(row) for _, row in df.tail(top_n_losers).iterrows()]
+        losers.reverse()
+
+        logger.info("Fetched sector performance via THS fallback: %d gainers, %d losers", len(gainers), len(losers))
+        return {"gainers": gainers, "losers": losers}
+    except Exception as e2:
+        logger.error("All sector sources failed: %s", e2)
         return {"gainers": [], "losers": []}
 
-    df = df.sort_values("涨跌幅", ascending=False)
 
-    def row_to_dict(row):
-        return {
-            "name": row.get("板块名称", ""),
-            "change_pct": float(row.get("涨跌幅", 0)),
-            "turnover_rate": float(row.get("换手率", 0)) if pd.notna(row.get("换手率")) else 0,
-            "amount": float(row.get("总成交额", 0)) if pd.notna(row.get("总成交额")) else 0,
-            "leader_stock": row.get("领涨股票", ""),
-            "leader_change_pct": float(row.get("领涨股票-涨跌幅", 0)) if pd.notna(row.get("领涨股票-涨跌幅")) else 0,
-            "num_up": int(row.get("上涨家数", 0)) if pd.notna(row.get("上涨家数")) else 0,
-            "num_down": int(row.get("下跌家数", 0)) if pd.notna(row.get("下跌家数")) else 0,
-        }
-
-    gainers = [row_to_dict(row) for _, row in df.head(top_n_gainers).iterrows()]
-    losers = [row_to_dict(row) for _, row in df.tail(top_n_losers).iterrows()]
-    losers.reverse()
-
-    logger.info("Fetched sector performance: %d gainers, %d losers", len(gainers), len(losers))
-    return {"gainers": gainers, "losers": losers}
-
-
-def fetch_market_breadth() -> dict:
-    """Fetch market breadth — number of stocks up/down/flat."""
-    logger.info("Fetching market breadth...")
+def _fetch_em_spot_df():
+    """Fetch A-share spot data once, with Sina fallback if EM is down."""
     try:
         df = _retry(ak.stock_zh_a_spot_em)
+        logger.info("Fetched A-share spot data via EM (%d rows)", len(df))
+        return df
     except Exception as e:
-        logger.error("Failed to fetch A-share spot data: %s", e)
+        logger.warning("EM spot failed (%s), trying Sina fallback...", e)
+        try:
+            df = _retry(ak.stock_zh_a_spot)
+            logger.info("Fetched A-share spot data via Sina fallback (%d rows)", len(df))
+            return df
+        except Exception as e2:
+            logger.error("All A-share spot sources failed: %s", e2)
+            return None
+
+
+def _compute_breadth(df) -> dict:
+    """Compute market breadth from a pre-fetched spot DataFrame."""
+    if df is None or df.empty:
         return {}
 
+    logger.info("Computing market breadth...")
     change_pct = df["涨跌幅"].astype(float)
 
     up_count = int((change_pct > 0).sum())
@@ -173,15 +218,12 @@ def fetch_market_breadth() -> dict:
     return result
 
 
-def fetch_top_movers(top_n: int = 10) -> dict:
-    """Fetch top gaining and losing individual stocks."""
-    logger.info("Fetching top movers...")
-    try:
-        df = _retry(ak.stock_zh_a_spot_em)
-    except Exception as e:
-        logger.error("Failed to fetch A-share spot data: %s", e)
+def _compute_top_movers(df, top_n: int = 10) -> dict:
+    """Compute top gainers/losers from a pre-fetched spot DataFrame."""
+    if df is None or df.empty:
         return {"gainers": [], "losers": []}
 
+    logger.info("Computing top movers...")
     df = df[df["成交量"].astype(float) > 0].copy()
     df["涨跌幅"] = df["涨跌幅"].astype(float)
     df = df.sort_values("涨跌幅", ascending=False)
@@ -199,7 +241,7 @@ def fetch_top_movers(top_n: int = 10) -> dict:
     losers = [stock_to_dict(row) for _, row in df.tail(top_n).iterrows()]
     losers.reverse()
 
-    logger.info("Fetched top %d gainers and losers", top_n)
+    logger.info("Computed top %d gainers and losers", top_n)
     return {"gainers": gainers, "losers": losers}
 
 
@@ -218,9 +260,10 @@ def fetch_all_market_data(config: dict) -> dict:
         top_n_losers=sector_cfg.get("top_n_losers", 5),
     )
 
-    breadth = fetch_market_breadth()
-
-    top_movers = fetch_top_movers(top_n=10)
+    # Fetch EM spot data once, shared by breadth and top_movers
+    spot_df = _fetch_em_spot_df()
+    breadth = _compute_breadth(spot_df)
+    top_movers = _compute_top_movers(spot_df, top_n=10)
 
     return {
         "indices": indices,

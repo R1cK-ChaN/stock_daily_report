@@ -264,20 +264,59 @@ def run_pipeline():
         report_text, market_data, news_data, pboc_data, config,
     )
 
+    delivery_blocked = False
+
     if not post_checks["passed"]:
-        logger.warning("Post-generation checks found issues — report marked for review")
+        logger.warning("Post-generation checks found issues — attempting one regeneration")
+
+        # Build hints from review flags and claim issues
+        regeneration_hints = list(post_checks.get("review_flags", []))
+        for issue in post_checks.get("claim_check", {}).get("issues", []):
+            if issue.get("severity") == "critical":
+                regeneration_hints.append(f"{issue.get('claim', '')}: {issue.get('explanation', '')}")
+
+        # Step 4b: Retry generation with hints
+        logger.info("=" * 60)
+        logger.info("STEP 4b: Regenerating report with fact-check feedback...")
+        logger.info("=" * 60)
+
+        try:
+            generation_result = generate_report(
+                market_data, news_data, pboc_data, config,
+                regeneration_hints=regeneration_hints,
+            )
+            report_text = generation_result["report_text"]
+            logger.info("Regenerated report (%d characters)", len(report_text))
+
+            # Re-run post-gen checks
+            post_checks = run_post_generation_checks(
+                report_text, market_data, news_data, pboc_data, config,
+            )
+
+            if not post_checks["passed"]:
+                logger.error("Post-generation checks STILL FAILED after retry — delivery BLOCKED")
+                delivery_blocked = True
+            else:
+                logger.info("Post-generation checks PASSED after retry")
+        except Exception as e:
+            logger.error("Regeneration FAILED: %s — delivery BLOCKED", e)
+            delivery_blocked = True
     else:
         logger.info("Post-generation checks PASSED")
 
-    # Step 5: Save report
+    # Step 5: Save report (always save for manual review, even if blocked)
     logger.info("=" * 60)
     logger.info("STEP 5: Saving report and delivering...")
     logger.info("=" * 60)
 
     report_path = save_report(report_text, post_checks, news_data, config)
 
-    # Step 6: Deliver via WeChat
-    delivery_result = deliver_report(report_text, config)
+    # Step 6: Deliver via WeChat (gated on fact-check results)
+    if delivery_blocked:
+        logger.warning("Delivery BLOCKED — report saved locally for manual review: %s", report_path)
+        delivery_result = {"success": False, "error": "Delivery blocked: fact-check failed after retry"}
+    else:
+        delivery_result = deliver_report(report_text, config)
 
     # Summary
     elapsed = (datetime.now() - start_time).total_seconds()
@@ -285,7 +324,7 @@ def run_pipeline():
     logger.info("Pipeline completed in %.1f seconds", elapsed)
     logger.info("Report: %s", report_path)
     logger.info("Fact-check: %s", "PASSED" if post_checks["passed"] else "NEEDS REVIEW")
-    logger.info("Delivery: %s", "OK" if delivery_result.get("success") else delivery_result.get("error", "skipped"))
+    logger.info("Delivery: %s", "BLOCKED" if delivery_blocked else ("OK" if delivery_result.get("success") else delivery_result.get("error", "skipped")))
     logger.info("=" * 60)
 
     return {
@@ -299,6 +338,7 @@ def run_pipeline():
         "fact_check": {
             "passed": post_checks["passed"],
             "review_flags": post_checks.get("review_flags", []),
+            "delivery_blocked": delivery_blocked,
         },
         "delivery": delivery_result,
     }
