@@ -434,8 +434,16 @@ def verify_claims_with_llm(
     data_summary = {
         "indices": market_data.get("indices", []),
         "breadth": market_data.get("breadth", {}),
-        "sectors_gainers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("gainers", [])],
-        "sectors_losers": [s["name"] + f" {s['change_pct']}%" for s in market_data.get("sectors", {}).get("losers", [])],
+        "sectors_gainers": [
+            s["name"] + f" {s['change_pct']}%"
+            + (f" (领涨股: {s['leader_stock']} {s['leader_change_pct']}%)" if s.get("leader_stock") else "")
+            for s in market_data.get("sectors", {}).get("gainers", [])
+        ],
+        "sectors_losers": [
+            s["name"] + f" {s['change_pct']}%"
+            + (f" (领涨股: {s['leader_stock']} {s['leader_change_pct']}%)" if s.get("leader_stock") else "")
+            for s in market_data.get("sectors", {}).get("losers", [])
+        ],
         "news_items": news_items,
         "pboc_repo_rates": pboc_data.get("repo_rates", {}),
         "pboc_shibor": pboc_data.get("shibor", {}),

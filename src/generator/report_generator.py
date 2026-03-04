@@ -9,6 +9,7 @@ to minimize hallucination.
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -244,14 +245,14 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 
 请按以下结构撰写报告：
 
-## 一、A股收评 (市场表现)
+一、A股收评（市场表现）
 - 概述今日大盘走势（上证、深证、创业板等主要指数涨跌）
 - 分析成交量变化
 - 点评板块轮动（领涨/领跌板块及原因分析）
 - 市场情绪（涨跌家数、涨停跌停）
 - 字数：300-500字
 
-## 二、基本面分析 (重要新闻与经济数据)
+二、基本面分析（重要新闻与经济数据）
 - 以下是按市场影响力预选的重要新闻，请对排名靠前的2-3条进行深入解读分析
 - 直接陈述新闻事实，不要提及或引用新闻来源名称（如"据XX报道"）
 - 不得引用或编造未在上方数据中出现的新闻
@@ -259,13 +260,13 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 仅当上方数据中包含经济数据时才进行解读，否则直接跳过，不要提及缺失
 - 字数：200-400字
 
-## 三、央行逆回购 (公开市场操作)
+三、央行逆回购（公开市场操作）
 - 今日操作情况（金额、期限、利率）
 - 到期与净投放/回笼情况
 - 资金面分析与政策信号解读
 - 字数：150-300字
 
-## 四、总结与展望
+四、总结与展望
 - 综合以上三部分，给出今日市场总结
 - 短期展望（基于数据，不做过度预测）
 - 字数：150-250字
@@ -274,7 +275,8 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 所有数字必须与提供的数据一致
 - 如果某项数据缺失或不足以支撑分析，直接跳过，不需要提及缺失
 - 使用专业财经术语
-- 语气客观中立"""
+- 语气客观中立
+- 输出纯文本，不要使用任何Markdown格式符号（如##、**、*、-等），只用普通文字和换行"""
 
     return prompt
 
@@ -331,6 +333,10 @@ def generate_report(
     )
 
     report_text = response.choices[0].message.content
+    # Strip any markdown formatting the LLM may have included
+    report_text = re.sub(r'^#{1,6}\s*', '', report_text, flags=re.MULTILINE)  # ## headers
+    report_text = re.sub(r'\*\*(.+?)\*\*', r'\1', report_text)               # **bold**
+    report_text = re.sub(r'\*(.+?)\*', r'\1', report_text)                    # *italic*
     usage = response.usage
 
     result = {
