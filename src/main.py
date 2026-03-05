@@ -154,6 +154,25 @@ def save_report(report_text: str, check_results: dict, news_data: dict, config: 
     return report_path
 
 
+def log_report_snapshot(report_path: Path, fallback_text: str) -> None:
+    """
+    Append the final report text to the pipeline log for traceability.
+    This preserves each run's output even though report.md is overwritten.
+    """
+    try:
+        report_content = report_path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to read saved report for log snapshot (%s), using in-memory text", e)
+        report_content = fallback_text
+
+    logger.info("=" * 60)
+    logger.info("FINAL REPORT SNAPSHOT BEGIN")
+    for line in report_content.splitlines():
+        logger.info("[REPORT] %s", line)
+    logger.info("FINAL REPORT SNAPSHOT END")
+    logger.info("=" * 60)
+
+
 def is_trading_day() -> bool:
     """Check if today is an A-share trading day using Sina's calendar.
     Covers weekends and Chinese holidays (Spring Festival, National Day, etc.).
@@ -326,6 +345,7 @@ def run_pipeline():
     logger.info("Fact-check: %s", "PASSED" if post_checks["passed"] else "NEEDS REVIEW")
     logger.info("Delivery: %s", "BLOCKED" if delivery_blocked else ("OK" if delivery_result.get("success") else delivery_result.get("error", "skipped")))
     logger.info("=" * 60)
+    log_report_snapshot(report_path, report_text)
 
     return {
         "success": True,
