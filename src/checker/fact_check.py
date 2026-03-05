@@ -88,15 +88,11 @@ def validate_data_completeness(market_data: dict, news_data: dict, pboc_data: di
         })
 
     # Check news
-    total_news = (
-        len(news_data.get("market_news", []))
-        + len(news_data.get("cctv_news", []))
-    )
-    if total_news == 0:
+    if not news_data.get("market_news"):
         issues.append({
             "severity": "warning",
             "field": "news_data",
-            "message": "No news data available from any source",
+            "message": "No news data available from Telegram feed",
         })
 
     # Check PBOC data (may legitimately be empty on non-operation days)
@@ -201,6 +197,13 @@ def extract_numbers_from_text(text: str) -> list[dict]:
     matches = []
 
     for match in re.finditer(pattern, text):
+        prev_char = text[match.start() - 1] if match.start() > 0 else ""
+        next_char = text[match.end()] if match.end() < len(text) else ""
+        # Ignore code-like tokens such as FR014/LPR_1Y/CSI300 where digits are
+        # attached to ASCII identifiers instead of narrative numbers.
+        if re.match(r"[A-Za-z_]", prev_char) or re.match(r"[A-Za-z_]", next_char):
+            continue
+
         start = max(0, match.start() - 20)
         end = min(len(text), match.end() + 20)
         context = text[start:end].strip()
@@ -218,6 +221,26 @@ def extract_numbers_from_text(text: str) -> list[dict]:
             continue
 
     return matches
+
+
+def _extract_numeric_literals(text: str) -> set[float]:
+    """
+    Extract plain numeric literals from a text blob while avoiding code-like
+    identifiers (e.g. FR014, LPR_1Y).
+    """
+    values: set[float] = set()
+    if not text:
+        return values
+
+    pattern = r'(?<![0-9A-Za-z_])(\d+\.?\d*)(?![A-Za-z_])'
+    for match in re.finditer(pattern, str(text)):
+        try:
+            value = float(match.group(1))
+        except (TypeError, ValueError):
+            continue
+        values.add(round(value, 2))
+        values.add(round(value, 1))
+    return values
 
 
 def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | None = None) -> set[float]:
@@ -250,6 +273,19 @@ def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | N
             if key == "total_amount":
                 numbers.add(round(float(val) / 1e8, 2))  # 亿元
                 numbers.add(round(float(val) / 1e12, 2))  # 万亿元
+    total_stocks = breadth.get("total_stocks")
+    if total_stocks:
+        total_stocks = float(total_stocks)
+        for key in ["up_count", "down_count", "flat_count", "limit_up", "limit_down"]:
+            val = breadth.get(key)
+            if val is None:
+                continue
+            ratio = float(val) / total_stocks * 100
+            numbers.add(float(int(ratio)))
+            numbers.add(float(int(ratio) + 1))
+            numbers.add(round(ratio))
+            numbers.add(round(ratio, 1))
+            numbers.add(round(ratio, 2))
 
     # Sector data
     for direction in ["gainers", "losers"]:
@@ -304,12 +340,21 @@ def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | N
     # Economic data from news
     if news_data:
         for econ in news_data.get("economic_data", []):
+            value_text = str(econ.get("value", ""))
+            numbers.update(_extract_numeric_literals(value_text))
             try:
-                val = float(econ.get("value", ""))
+                val = float(value_text)
                 numbers.add(round(val, 2))
                 numbers.add(round(val, 1))
             except (ValueError, TypeError):
                 pass
+
+        # Add numeric literals from the same ranked news context used by the
+        # report writer. This reduces false positives for section-2 citations.
+        ranked_or_raw = news_data.get("ranked_news", news_data.get("market_news", []))
+        for item in ranked_or_raw[:20]:
+            text_blob = f"{item.get('title', '')} {item.get('content', '')}"
+            numbers.update(_extract_numeric_literals(text_blob))
 
     return numbers
 
@@ -419,13 +464,13 @@ def verify_claims_with_llm(
     api_key = os.environ.get("OPENROUTER_API_KEY", os.environ.get("ANTHROPIC_API_KEY", ""))
 
     # Build a concise data summary for the verifier
-    # Include news content (not just headlines) to match what the report generator sees
+    # Include FULL news content to match exactly what the report generator sees
     news_items = []
     for n in news_data.get("ranked_news", news_data.get("market_news", []))[:10]:
         item = {"title": n.get("title", "")}
         content = n.get("content") or n.get("summary") or n.get("description") or ""
         if content:
-            item["content"] = content[:300]
+            item["content"] = content
         source = n.get("source") or n.get("feed_name") or ""
         if source:
             item["source"] = source
@@ -435,13 +480,25 @@ def verify_claims_with_llm(
         "indices": market_data.get("indices", []),
         "breadth": market_data.get("breadth", {}),
         "sectors_gainers": [
-            s["name"] + f" {s['change_pct']}%"
-            + (f" (领涨股: {s['leader_stock']} {s['leader_change_pct']}%)" if s.get("leader_stock") else "")
+            {
+                "name": s.get("name", ""),
+                "change_pct": s.get("change_pct"),
+                "leader_stock": s.get("leader_stock", ""),
+                "leader_change_pct": s.get("leader_change_pct"),
+                "num_up": s.get("num_up"),
+                "num_down": s.get("num_down"),
+            }
             for s in market_data.get("sectors", {}).get("gainers", [])
         ],
         "sectors_losers": [
-            s["name"] + f" {s['change_pct']}%"
-            + (f" (领涨股: {s['leader_stock']} {s['leader_change_pct']}%)" if s.get("leader_stock") else "")
+            {
+                "name": s.get("name", ""),
+                "change_pct": s.get("change_pct"),
+                "leader_stock": s.get("leader_stock", ""),
+                "leader_change_pct": s.get("leader_change_pct"),
+                "num_up": s.get("num_up"),
+                "num_down": s.get("num_down"),
+            }
             for s in market_data.get("sectors", {}).get("losers", [])
         ],
         "news_items": news_items,
@@ -462,8 +519,9 @@ def verify_claims_with_llm(
 ===== 核查要求 =====
 请逐一检查报告中的：
 1. 数字准确性已由独立的数字校验层处理，你无需重复检查数字。不要基于你自己的先验假设质疑数据的量级或合理性（如成交额大小、涨跌幅范围等），范围校验已在第一层完成。
-2. 新闻引用：报告中的新闻内容是否可以从提供的新闻条目（标题和内容）中合理推断或综合得出。允许对多条新闻进行合理的综合概括，但不允许凭空捏造完全没有新闻来源支持的事件。
-3. 所有因果关系和分析判断是否有数据基础
+2. 新闻引用：报告第二部分"基本面分析"中的内容是否可以从提供的news_items（标题和内容）中合理推断或综合得出。允许对多条新闻进行合理的综合概括，但不允许凭空捏造完全没有新闻来源支持的事件，也不允许补充新闻中未明确提及的具体数字或细节。
+3. 数据分区：报告第一部分只能引用indices/breadth/sectors数据，第三部分只能引用pboc数据，不得将news_items中的信息用于第一或第三部分。
+4. 所有因果关系和分析判断是否有数据基础
 
 请用以下JSON格式回复：
 {{
@@ -493,12 +551,23 @@ def verify_claims_with_llm(
         response_text = response.choices[0].message.content
 
         # Try to parse JSON from response
+        verification_result = None
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
-            verification_result = json.loads(json_match.group())
-        else:
+            try:
+                verification_result = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                verification_result = None
+
+        if verification_result is None:
+            # Fallback: infer overall status from raw text when JSON is malformed
+            verified_hint = None
+            if re.search(r'overall_verified["\']?\s*:\s*true', response_text, flags=re.IGNORECASE):
+                verified_hint = True
+            elif re.search(r'overall_verified["\']?\s*:\s*false', response_text, flags=re.IGNORECASE):
+                verified_hint = False
             verification_result = {
-                "overall_verified": None,
+                "overall_verified": verified_hint,
                 "issues": [],
                 "summary": response_text,
             }
@@ -537,6 +606,99 @@ def verify_claims_with_llm(
 # Combined Check Runner
 # ────────────────────────────────────────────────────────────
 
+def _check_omo_net_amount_claims(report_text: str, pboc_data: dict) -> list[dict]:
+    """
+    If structured OMO data does not provide maturity/net fields, reject
+    explicit 到期/净投放/净回笼 amounts in report text.
+    """
+    omo = pboc_data.get("omo", {})
+    if not omo.get("has_data"):
+        return []
+
+    has_explicit_net_fields = any(
+        omo.get(k) is not None
+        for k in ["maturity_amount", "net_injection", "net_amount", "net_drain", "expiry_amount"]
+    )
+    if has_explicit_net_fields:
+        return []
+
+    suspicious_patterns = [
+        r"到期[^。\n]{0,20}\d+\.?\d*\s*亿元",
+        r"净投放[^。\n]{0,20}\d+\.?\d*\s*亿元",
+        r"净回笼[^。\n]{0,20}\d+\.?\d*\s*亿元",
+    ]
+    issues = []
+    for pat in suspicious_patterns:
+        m = re.search(pat, report_text)
+        if not m:
+            continue
+        issues.append({
+            "claim": m.group(0),
+            "issue_type": "unsupported_claim",
+            "severity": "critical",
+            "explanation": "OMO结构化数据未提供到期/净投放字段，该数字不应出现",
+        })
+    return issues
+
+
+def _check_unsupported_trend_claims(report_text: str) -> list[dict]:
+    """
+    Reject trend/extreme claims that require historical time-series support,
+    which is not present in current structured market data payload.
+    """
+    suspicious_patterns = [
+        r"创出[^。\n]{0,12}(新高|新低)",
+        r"创[^。\n]{0,8}(历史|阶段|年内)?[^。\n]{0,6}(新高|新低)",
+        r"(历史|阶段|年内)[^。\n]{0,4}(新高|新低)",
+        r"(再创|刷新)[^。\n]{0,8}(新高|新低)",
+    ]
+    issues = []
+    seen_claims: list[str] = []
+    for pat in suspicious_patterns:
+        m = re.search(pat, report_text)
+        if not m:
+            continue
+        claim = m.group(0)
+        if any(claim in c or c in claim for c in seen_claims):
+            continue
+        seen_claims.append(claim)
+        issues.append({
+            "claim": claim,
+            "issue_type": "unsupported_claim",
+            "severity": "critical",
+            "explanation": "当前数据不含历史序列，无法支持“新高/新低”类判断",
+        })
+    return issues
+
+
+def _check_approx_ratio_claims(report_text: str) -> list[dict]:
+    """
+    Reject vague market-breadth ratio wording like "上涨家数占比接近八成".
+    The report should use structured counts or explicit percentages instead.
+    """
+    suspicious_patterns = [
+        r"(上涨家数|下跌家数|涨停家数|跌停家数|市场上涨占比|两市上涨占比|全市场上涨占比)"
+        r"[^。\n]{0,12}(接近|近|约|大约|超过|超|不足)\s*[一二三四五六七八九十两\d]+成",
+    ]
+    issues = []
+    seen_claims: list[str] = []
+    for pat in suspicious_patterns:
+        m = re.search(pat, report_text)
+        if not m:
+            continue
+        claim = m.group(0)
+        if any(claim in c or c in claim for c in seen_claims):
+            continue
+        seen_claims.append(claim)
+        issues.append({
+            "claim": claim,
+            "issue_type": "unsupported_claim",
+            "severity": "critical",
+            "explanation": "该比例表述过于模糊，请改为结构化计数或明确百分比",
+        })
+    return issues
+
+
 def run_post_generation_checks(
     report_text: str,
     market_data: dict,
@@ -557,12 +719,20 @@ def run_post_generation_checks(
     claim_check = verify_claims_with_llm(
         report_text, market_data, news_data, pboc_data, config,
     )
+    deterministic_issues = []
+    deterministic_issues.extend(_check_omo_net_amount_claims(report_text, pboc_data))
+    deterministic_issues.extend(_check_unsupported_trend_claims(report_text))
+    deterministic_issues.extend(_check_approx_ratio_claims(report_text))
+    if deterministic_issues:
+        claim_check.setdefault("issues", [])
+        claim_check["issues"].extend(deterministic_issues)
+        claim_check["verified"] = False
 
     # Determine overall pass/fail
     validation_cfg = config.get("validation", {})
     number_threshold = validation_cfg.get("number_verification_rate", 0.60)
     number_ok = number_check["verification_rate"] >= number_threshold
-    claims_ok = claim_check.get("verified", True) is not False
+    claims_ok = claim_check.get("verified") is True
 
     # Count critical issues from LLM verification
     # Exclude number_mismatch — Layer 2 already handles number verification
@@ -571,13 +741,17 @@ def run_post_generation_checks(
         if i.get("severity") == "critical" and i.get("issue_type") != "number_mismatch"
     ]
 
-    overall_passed = number_ok and len(critical_claim_issues) == 0
+    overall_passed = number_ok and claims_ok and len(critical_claim_issues) == 0
 
     # Build needs-review flags
     review_flags = []
     if not number_ok:
         review_flags.append(
             f"[NEEDS REVIEW] Number verification rate: {number_check['verification_rate']:.0%}"
+        )
+    if not claims_ok:
+        review_flags.append(
+            "[NEEDS REVIEW] LLM claim verification did not return a confirmed pass"
         )
     for issue in critical_claim_issues:
         review_flags.append(f"[NEEDS REVIEW] {issue.get('claim', 'Unknown claim')}: {issue.get('explanation', '')}")

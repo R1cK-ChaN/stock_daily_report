@@ -12,12 +12,35 @@ import re
 from datetime import datetime, date, timedelta
 from typing import Any
 
+import time as _time
+
 import akshare as ak
 import feedparser
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
+
+
+def _requests_session_with_retry(
+    retries: int = 3,
+    backoff_factor: float = 1.0,
+    timeout: int = 15,
+) -> requests.Session:
+    """Create a requests session with automatic retry on connection/server errors."""
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def fetch_repo_rates() -> dict:
@@ -367,12 +390,15 @@ def fetch_omo_via_scraping(config: dict) -> dict | None:
 
     logger.info("Scraping PBOC OMO listing: %s", listing_url)
 
+    session = _requests_session_with_retry(retries=3, backoff_factor=2.0)
+
     try:
-        resp = requests.get(listing_url, headers=headers, timeout=timeout)
+        resp = session.get(listing_url, headers=headers, timeout=timeout)
         resp.encoding = resp.apparent_encoding or "utf-8"
         resp.raise_for_status()
     except Exception as e:
-        logger.warning("Failed to fetch PBOC listing page: %s", e)
+        logger.warning("Failed to fetch PBOC listing page after retries: %s", e)
+        session.close()
         return None
 
     # Find today's announcement link — PBOC uses paths with /YYYYMMDD/ or dates in href
@@ -404,11 +430,12 @@ def fetch_omo_via_scraping(config: dict) -> dict | None:
     logger.info("Fetching OMO detail page: %s", detail_url)
 
     try:
-        resp2 = requests.get(detail_url, headers=headers, timeout=timeout)
+        resp2 = session.get(detail_url, headers=headers, timeout=timeout)
         resp2.encoding = resp2.apparent_encoding or "utf-8"
         resp2.raise_for_status()
     except Exception as e:
-        logger.warning("Failed to fetch OMO detail page: %s", e)
+        logger.warning("Failed to fetch OMO detail page after retries: %s", e)
+        session.close()
         return None
 
     # Extract title from the detail page
@@ -417,6 +444,7 @@ def fetch_omo_via_scraping(config: dict) -> dict | None:
     # Clean up common title suffixes
     title = re.sub(r'\s*[-_|]\s*中国人民银行.*$', '', title)
 
+    session.close()
     result = _parse_omo_html(resp2.text, title, detail_url)
     if result:
         result["source"] = "scraping"

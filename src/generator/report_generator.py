@@ -27,7 +27,8 @@ SYSTEM_PROMPT = """你是一位专业的中国A股市场分析师，负责撰写
 4. 使用专业、简洁的财经语言
 5. 报告使用中文撰写
 6. 每个观点都必须有数据支撑
-7. 即使新闻标题中提到了某些数字（如涨停数、连板数），除非这些数字也出现在对应的结构化数据字段中，否则不得将其作为精确统计数据引用。新闻中的数字只能作为新闻引用，必须注明来源。"""
+7. 即使新闻标题中提到了某些数字（如涨停数、连板数），除非这些数字也出现在对应的结构化数据字段中，否则不得将其作为精确统计数据引用。新闻中的数字只能作为新闻引用，必须注明来源。
+8. 禁止使用“接近八成/超过九成/不足五成”等模糊比例口径，若要描述占比必须给出可由结构化数据直接计算的明确百分比。"""
 
 
 def _fmt_amount(yuan: float) -> str:
@@ -84,11 +85,13 @@ def _format_breadth_data(breadth: dict) -> str:
             "（市场广度数据暂缺。严禁从新闻标题推测涨跌家数、涨停跌停数量或连板数据。"
             '如需提及市场广度，请写\u201c数据暂缺\u201d。）'
         )
+    total_amount = breadth.get("total_amount")
+    amount_text = _fmt_amount(float(total_amount)) if total_amount is not None else "N/A"
     return (
         f"上涨: {breadth.get('up_count', 'N/A')}家, 下跌: {breadth.get('down_count', 'N/A')}家, "
         f"平盘: {breadth.get('flat_count', 'N/A')}家\n"
         f"涨停: {breadth.get('limit_up', 'N/A')}家, 跌停: {breadth.get('limit_down', 'N/A')}家\n"
-        f"两市总成交额: {_fmt_amount(breadth.get('total_amount', 0))}"
+        f"两市总成交额: {amount_text}"
     )
 
 
@@ -99,30 +102,26 @@ def _format_news_data(news_data: dict) -> str:
     # Use pre-ranked news if available (from news_ranker)
     ranked = news_data.get("ranked_news", [])
     if ranked:
-        lines.append("【以下新闻已按市场影响力预排序，原文为英文，请在报告中用中文概述要点，不要提及新闻来源名称】")
+        lines.append("【以下为金十快讯，已按A股市场影响力预排序，请直接用中文概述要点，不要提及新闻来源名称】")
         for i, item in enumerate(ranked, 1):
             reason = item.get("llm_reason", "")
             reason_str = f" | 理由: {reason}" if reason else ""
+            # For jin10, content is the full message which often has more detail than title
+            content = item.get("content", "")
+            title = item.get("title", "")
+            display_text = content if len(content) > len(title) else title
             lines.append(
-                f"[重要性: {i}] {item['title']}\n"
-                f"  来源: {item.get('source', '未知')}{reason_str}\n"
-                f"  摘要: {item.get('content', '')[:300]}"
+                f"[重要性: {i}{reason_str}]\n"
+                f"  {display_text}"
             )
     else:
         # Fallback: use raw market_news if ranking wasn't run
-        lines.append("【以下新闻原文为英文，请在报告中用中文概述要点，不要提及新闻来源名称】")
+        lines.append("【以下为金十快讯，请直接用中文概述要点】")
         for item in news_data.get("market_news", [])[:10]:
-            lines.append(f"- [{item['source']}] {item['title']}")
-            if item.get("content"):
-                lines.append(f"  摘要: {item['content'][:200]}")
-
-        for item in news_data.get("cctv_news", [])[:5]:
-            lines.append(f"- [{item['source']}] {item['title']}")
-
-    if news_data.get("economic_data"):
-        lines.append("\n【经济数据】")
-        for d in news_data["economic_data"]:
-            lines.append(f"- {d['indicator']}: {d['value']} ({d['period']})")
+            content = item.get("content", "")
+            title = item.get("title", "")
+            display_text = content if len(content) > len(title) else title
+            lines.append(f"- {display_text}")
 
     return "\n".join(lines) if lines else "（新闻数据暂缺）"
 
@@ -148,6 +147,12 @@ def _format_pboc_data(pboc_data: dict) -> str:
                 parts.append(f"中标量: {op['win_amount']:.1f}亿元")
             lines.append(f"- {', '.join(parts)}")
         lines.append(f"合计投放: {omo.get('total_amount', 0):.1f}亿元")
+        if (
+            omo.get("maturity_amount") is None
+            and omo.get("net_injection") is None
+            and omo.get("net_amount") is None
+        ):
+            lines.append("约束: 未提供到期与净投放/净回笼数据，禁止补充此类数字")
         lines.append(f"来源: {omo.get('url', '')}")
     else:
         lines.append("\n【公开市场操作公告】今日无公开市场操作公告")
@@ -196,8 +201,6 @@ def _build_missing_data_warnings(market_data: dict, news_data: dict, pboc_data: 
         warnings.append("- 板块表现数据缺失：跳过板块涨跌相关内容，勿编造")
     if not news_data.get("market_news") and not news_data.get("ranked_news"):
         warnings.append("- 市场新闻数据缺失：跳过新闻相关内容，勿编造")
-    if not news_data.get("economic_data"):
-        warnings.append("- 经济数据缺失：跳过CPI、PMI、GDP等经济指标，勿编造或提及暂缺")
     if not pboc_data.get("has_data"):
         warnings.append("- 央行公开市场操作数据缺失：跳过逆回购相关内容，勿编造")
     elif not pboc_data.get("omo", {}).get("has_data"):
@@ -262,8 +265,8 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 
 三、央行逆回购（公开市场操作）
 - 今日操作情况（金额、期限、利率）
-- 到期与净投放/回笼情况
-- 资金面分析与政策信号解读
+- 到期与净投放/回笼情况（仅当【三】数据明确提供该字段时才可写具体数字；否则跳过）
+- 仅基于回购利率、SHIBOR、LPR与公开市场操作数据进行资金面解读
 - 字数：150-300字
 
 四、总结与展望
@@ -274,9 +277,19 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 注意：
 - 所有数字必须与提供的数据一致
 - 如果某项数据缺失或不足以支撑分析，直接跳过，不需要提及缺失
+- 禁止使用“创出新高/新低、历史新高/新低、阶段性新高/新低”等需要历史序列支撑的表述
+- 禁止使用“接近X成/超过X成/不足X成”等模糊比例描述；若描述占比，必须给出明确百分比
 - 使用专业财经术语
 - 语气客观中立
-- 输出纯文本，不要使用任何Markdown格式符号（如##、**、*、-等），只用普通文字和换行"""
+- 输出纯文本，不要使用任何Markdown格式符号（如##、**、*、-等），只用普通文字和换行
+
+严格数据分区（极其重要）：
+- 第一部分"A股收评"只能使用【一、主要指数行情】【市场广度】【板块表现】的结构化数据，禁止引用金十快讯中的任何内容
+- 第二部分"基本面分析"只能使用【二、今日财经新闻与经济数据】中的金十快讯内容，只使用快讯中明确出现的事实和数字，不要补充快讯中未提及的具体数字或细节
+- 第三部分"央行逆回购"只能使用【三、央行公开市场操作】的结构化数据，禁止从金十快讯中提取央行操作信息
+- 若【三】未提供到期或净投放字段，禁止出现“到期X亿元/净投放(回笼)X亿元”等具体数字
+- 第三部分禁止引用“两会表态、降准降息预期、稳增长政策”等新闻口径内容
+- 第四部分"总结与展望"可综合引用前三部分已确认的内容"""
 
     return prompt
 
@@ -355,8 +368,6 @@ def generate_report(
             "news_data_summary": {
                 "num_market_news": len(news_data.get("market_news", [])),
                 "num_ranked": len(news_data.get("ranked_news", [])),
-                "num_cctv": len(news_data.get("cctv_news", [])),
-                "num_econ": len(news_data.get("economic_data", [])),
             },
             "pboc_has_data": pboc_data.get("has_data", False),
         },

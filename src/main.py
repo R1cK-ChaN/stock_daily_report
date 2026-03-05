@@ -28,7 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
 from src.fetchers.market_data import fetch_all_market_data
-from src.fetchers.news import fetch_all_news
+from src.fetchers.telegram_news import fetch_telegram_news
 from src.fetchers.news_ranker import rank_news
 from src.fetchers.pboc import fetch_pboc_data
 from src.generator.report_generator import generate_report
@@ -86,7 +86,7 @@ def fetch_all_data(config: dict) -> tuple[dict, dict, dict]:
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
             executor.submit(fetch_all_market_data, config): "market",
-            executor.submit(fetch_all_news, config): "news",
+            executor.submit(fetch_telegram_news, config): "news",
             executor.submit(fetch_pboc_data, config): "pboc",
         }
 

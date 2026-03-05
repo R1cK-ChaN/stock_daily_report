@@ -32,6 +32,15 @@ market:
       name: "中小100"
     - code: "1.000688"
       name: "科创50"
+  spot_fetch:
+    # Spot universe fetch strategy for breadth/top movers
+    source_order: ["em", "em_segmented", "sina"]  # full EM -> segmented EM -> Sina
+    enable_sina_fallback: false    # keep failure path fast; breadth falls back to Legu
+    request_timeout: 6            # per HTTP request, seconds
+    max_retries_per_request: 1    # keep failure path fast
+    em_page_size: 2000            # larger page size reduces EM pagination
+    overall_timeout_seconds: 30   # cap total time spent on spot fetch
+    min_rows: 3000                # accept source only when coverage is sufficient
 
 # Data validation thresholds
 validation:
@@ -43,100 +52,36 @@ validation:
     chinext_min: 1000
     chinext_max: 5000
   max_daily_change_pct: 15.0  # Flag if any index moves >15% (circuit breaker territory)
-  number_verification_rate: 0.60  # Minimum ratio of report numbers verified against source data
+  number_verification_rate: 0.85  # Minimum ratio of report numbers verified against source data
   required_fields:
     - index_prices
     - pboc_repo
 
-# News settings
+# News settings — Jin10 Telegram channel as sole source
 news:
-  max_headlines: 80
-  select_top_n: 5
-  fetch_timeout: 10
-  max_workers: 10
-  max_age_hours: 48
-  dedup_threshold: 0.7
-
-  article_fetch_enabled: true
-  article_fetch_timeout: 15
-  article_max_chars: 2000
-
-  rss_feeds:
-    # Markets (7)
-    - {name: "CNBC", url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", category: "markets"}
-    - {name: "Yahoo Finance", url: "https://finance.yahoo.com/rss/topstories", category: "markets"}
-    - {name: "Reuters Markets", url: "https://news.google.com/rss/search?q=site:reuters.com+markets+stocks+when:1d&hl=en-US&gl=US&ceid=US:en", category: "markets"}
-    - {name: "Bloomberg Markets", url: "https://news.google.com/rss/search?q=site:bloomberg.com+markets+when:1d&hl=en-US&gl=US&ceid=US:en", category: "markets"}
-    - {name: "WSJ Markets", url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", category: "markets"}
-    - {name: "BBC Business", url: "https://feeds.bbci.co.uk/news/business/rss.xml", category: "markets"}
-    - {name: "Nikkei Asia", url: "https://asia.nikkei.com/rss/feed/nar", category: "markets"}
-    # Central Banks (4)
-    - {name: "Federal Reserve", url: "https://www.federalreserve.gov/feeds/press_all.xml", category: "central_banks"}
-    - {name: "ECB Press", url: "https://www.ecb.europa.eu/rss/press.html", category: "central_banks"}
-    - {name: "PBoC Watch", url: "https://news.google.com/rss/search?q=(PBOC+OR+%22People's+Bank+of+China%22)+when:7d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
-    - {name: "Global Central Banks", url: "https://news.google.com/rss/search?q=%22rate+hike%22+OR+%22rate+cut%22+OR+%22interest+rate+decision%22+central+bank+when:3d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
-    # Economic (3)
-    - {name: "WSJ Economy", url: "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed", category: "economic"}
-    - {name: "Economic Data", url: "https://news.google.com/rss/search?q=CPI+OR+inflation+OR+GDP+OR+%22jobs+report%22+OR+%22nonfarm+payrolls%22+OR+PMI+when:2d&hl=en-US&gl=US&ceid=US:en", category: "economic"}
-    - {name: "Trade & Tariffs", url: "https://news.google.com/rss/search?q=tariff+OR+%22trade+war%22+OR+%22trade+deficit%22+OR+sanctions+when:2d&hl=en-US&gl=US&ceid=US:en", category: "economic"}
-    # Commodities (2)
-    - {name: "Oil & Gas", url: "https://news.google.com/rss/search?q=oil+price+OR+OPEC+OR+%22natural+gas%22+OR+%22crude+oil%22+OR+WTI+OR+Brent+when:1d&hl=en-US&gl=US&ceid=US:en", category: "commodities"}
-    - {name: "Gold & Metals", url: "https://news.google.com/rss/search?q=%22gold+price%22+OR+%22silver+price%22+OR+%22copper+futures%22+OR+%22precious+metals%22+when:2d&hl=en-US&gl=US&ceid=US:en", category: "commodities"}
-    # Forex (2)
-    - {name: "Forex News", url: "https://news.google.com/rss/search?q=%22forex%22+OR+%22currency%22+OR+%22FX+market%22+trading+when:1d&hl=en-US&gl=US&ceid=US:en", category: "forex"}
-    - {name: "Dollar Watch", url: "https://news.google.com/rss/search?q=%22dollar+index%22+OR+DXY+OR+%22US+dollar%22+yuan+when:2d&hl=en-US&gl=US&ceid=US:en", category: "forex"}
-    # Analysis (2)
-    - {name: "Market Outlook", url: "https://news.google.com/rss/search?q=%22stock+market+outlook%22+OR+%22Wall+Street+outlook%22+OR+%22bull+market%22+OR+%22bear+market%22+when:3d&hl=en-US&gl=US&ceid=US:en", category: "analysis"}
-    - {name: "Bank Research", url: "https://news.google.com/rss/search?q=%22Goldman+Sachs%22+OR+%22JPMorgan%22+OR+%22Morgan+Stanley%22+forecast+OR+outlook+when:3d&hl=en-US&gl=US&ceid=US:en", category: "analysis"}
-    # China (12)
-    - {name: "SCMP China Economy", url: "https://www.scmp.com/rss/318421/feed", category: "china"}
-    - {name: "SCMP China", url: "https://www.scmp.com/rss/4/feed", category: "china"}
-    - {name: "SCMP Business", url: "https://www.scmp.com/rss/92/feed", category: "china"}
-    - {name: "Xinhua China", url: "http://www.xinhuanet.com/english/rss/chinarss.xml", category: "china"}
-    - {name: "Xinhua Business", url: "http://www.xinhuanet.com/english/rss/businessrss.xml", category: "china"}
-    - {name: "China Daily BizChina", url: "https://www.chinadaily.com.cn/rss/bizchina_rss.xml", category: "china"}
-    - {name: "China Daily News", url: "https://www.chinadaily.com.cn/rss/china_rss.xml", category: "china"}
-    - {name: "CGTN Business", url: "https://www.cgtn.com/subscribe/rss/section/business.xml", category: "china"}
-    - {name: "China Trade Watch", url: "https://news.google.com/rss/search?q=China+trade+OR+%22China+tariff%22+OR+%22US+China%22+trade+when:2d&hl=en-US&gl=US&ceid=US:en", category: "china"}
-    - {name: "China Markets", url: "https://news.google.com/rss/search?q=%22Shanghai+composite%22+OR+%22Hang+Seng%22+OR+%22CSI+300%22+OR+%22A-shares%22+OR+%22H-shares%22+when:2d&hl=en-US&gl=US&ceid=US:en", category: "china"}
-    - {name: "China Tech", url: "https://news.google.com/rss/search?q=Alibaba+OR+Tencent+OR+BYD+OR+Huawei+OR+Xiaomi+stock+OR+earnings+OR+regulation+when:3d&hl=en-US&gl=US&ceid=US:en", category: "china"}
-    - {name: "China Policy", url: "https://news.google.com/rss/search?q=%22China+GDP%22+OR+%22China+PMI%22+OR+%22China+CPI%22+OR+%22China+stimulus%22+OR+%22NPC%22+OR+%22NDRC%22+when:3d&hl=en-US&gl=US&ceid=US:en", category: "china"}
-    # Bonds (3)
-    - {name: "Bond Market", url: "https://news.google.com/rss/search?q=(%22bond+market%22+OR+%22treasury+yields%22+OR+%22bond+yields%22+OR+%2210-year+yield%22+OR+%22fixed+income%22)+-site:vietnambiz.vn+-site:vietstock.vn+when:2d&hl=en-US&gl=US&ceid=US:en", category: "bonds"}
-    - {name: "Treasury Watch", url: "https://news.google.com/rss/search?q=(%22US+Treasury%22+OR+%22Treasury+auction%22+OR+%2210-year+yield%22+OR+%222-year+yield%22)+when:2d&hl=en-US&gl=US&ceid=US:en", category: "bonds"}
-    - {name: "Corporate Bonds", url: "https://news.google.com/rss/search?q=(%22corporate+bond%22+OR+%22high+yield+bond%22+OR+%22high+yield+debt%22+OR+%22investment+grade+bond%22+OR+%22credit+spread%22)+when:3d&hl=en-US&gl=US&ceid=US:en", category: "bonds"}
-    # Wire Services (4)
-    - {name: "AP News", url: "https://news.google.com/rss/search?q=source:associated_press+when:1d&hl=en-US&gl=US&ceid=US:en", category: "wireservices"}
-    - {name: "France24 World", url: "https://www.france24.com/en/rss", category: "wireservices"}
-    - {name: "France24 Asia-Pacific", url: "https://www.france24.com/en/asia-pacific/rss", category: "wireservices"}
-    - {name: "France24 Business", url: "https://www.france24.com/en/business/rss", category: "wireservices"}
-    # Global (7)
-    - {name: "BBC World", url: "https://feeds.bbci.co.uk/news/world/rss.xml", category: "global"}
-    - {name: "BBC Asia", url: "https://feeds.bbci.co.uk/news/world/asia/rss.xml", category: "global"}
-    - {name: "CNA Asia", url: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511", category: "global"}
-    - {name: "CNA Business", url: "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6936", category: "global"}
-    - {name: "Economist Leaders", url: "https://www.economist.com/leaders/rss.xml", category: "global"}
-    - {name: "Economist Finance", url: "https://www.economist.com/finance-and-economics/rss.xml", category: "global"}
-    - {name: "Forbes Business", url: "https://www.forbes.com/business/feed", category: "global"}
-    # Central Banks — additional (4)
-    - {name: "ECB Watch", url: "https://news.google.com/rss/search?q=(%22European+Central+Bank%22+OR+ECB+OR+Lagarde)+(rate+OR+euro+OR+inflation+OR+%22monetary+policy%22)+-crypto+-bitcoin+when:3d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
-    - {name: "BoE Official", url: "https://www.bankofengland.co.uk/rss/news", category: "central_banks"}
-    - {name: "BoJ Watch", url: "https://news.google.com/rss/search?q=(%22Bank+of+Japan%22+OR+BoJ)+(rate+OR+yen+OR+yield+OR+%22monetary+policy%22)+-crypto+-bitcoin+when:3d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
-    - {name: "BoE Watch", url: "https://news.google.com/rss/search?q=(%22Bank+of+England%22+OR+BoE)+(rate+OR+sterling+OR+inflation+OR+%22monetary+policy%22)+-crypto+-bitcoin+when:3d&hl=en-US&gl=US&ceid=US:en", category: "central_banks"}
-    # Economic — additional (2)
-    - {name: "IMF News", url: "https://www.imf.org/en/news/rss", category: "economic"}
-    - {name: "Housing Market", url: "https://news.google.com/rss/search?q=(%22housing+market%22+OR+%22home+prices%22+OR+%22mortgage+rates%22+OR+REIT)+when:3d&hl=en-US&gl=US&ceid=US:en", category: "economic"}
+  # Telegram channel sources (scraped via t.me/s/ public preview)
+  telegram_channels:
+    - {name: "Jin10", url: "https://t.me/s/jin10data", category: "china"}
+  telegram_fetch_timeout: 15
+  telegram_max_age_hours: 24    # Previous 24 hours of news
+  telegram_max_pages: 80        # ~1200 messages for high-freq channels
 
   ranking:
-    keyword_top_n: 10
-    llm_top_n: 5
+    keyword_top_n: 15           # Wider first pass for high-volume Chinese feed
+    llm_top_n: 8                # More items reach writer to reduce hallucination
     llm_ranking_enabled: true
-    llm_max_tokens: 300
+    llm_max_tokens: 800
 
 # Sector performance
 sectors:
   top_n_gainers: 5
   top_n_losers: 5
+  fetch:
+    source_order: ["em_industry", "em_concept", "ths_page1"]  # bounded fallback chain
+    request_timeout: 6
+    max_retries_per_request: 1
+    em_page_size: 300
+    overall_timeout_seconds: 20
 
 # Output
 output:

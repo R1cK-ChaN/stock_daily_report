@@ -6,3 +6,5 @@ requests>=2.31.0
 feedparser>=6.0.0
 readability-lxml>=0.8
 markdownify>=0.12
+lxml>=4.9.0
+cssselect>=1.2.0
