@@ -6,7 +6,7 @@ Orchestrates the full workflow:
 2. Validate data (pre-LLM checks)
 3. Generate report via Claude API
 4. Fact-check the generated report (post-LLM checks)
-5. Save output and deliver via WeChat
+5. Save output and deliver via configured webhook notifiers
 """
 
 import json
@@ -33,7 +33,14 @@ from src.fetchers.news_ranker import rank_news
 from src.fetchers.pboc import fetch_pboc_data
 from src.generator.report_generator import generate_report
 from src.checker.fact_check import run_pre_generation_checks, run_post_generation_checks
-from src.delivery.wechat import deliver_report
+from src.delivery import (
+    EVENT_DELIVERY_BLOCKED,
+    EVENT_PIPELINE_EXCEPTION,
+    EVENT_PIPELINE_FAILURE,
+    deliver_report,
+    notify_event,
+    summarize_delivery_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,11 +254,19 @@ def run_pipeline():
         for issue in pre_checks["issues"]:
             if issue["severity"] == "critical":
                 logger.error("  CRITICAL: %s", issue["message"])
+        notification_result = notify_event(
+            EVENT_PIPELINE_FAILURE,
+            config=config,
+            stage="pre_validation",
+            error="Critical data validation failures",
+            issues=pre_checks["issues"],
+        )
         return {
             "success": False,
             "stage": "pre_validation",
             "error": "Critical data validation failures",
             "issues": pre_checks["issues"],
+            "notification": notification_result,
         }
 
     if pre_checks["warning_count"] > 0:
@@ -268,10 +283,17 @@ def run_pipeline():
         logger.info("Report generated successfully (%d characters)", len(report_text))
     except Exception as e:
         logger.error("Report generation FAILED: %s", e)
+        notification_result = notify_event(
+            EVENT_PIPELINE_FAILURE,
+            config=config,
+            stage="generation",
+            error=str(e),
+        )
         return {
             "success": False,
             "stage": "generation",
             "error": str(e),
+            "notification": notification_result,
         }
 
     # Step 4: Post-generation fact-checking
@@ -284,6 +306,7 @@ def run_pipeline():
     )
 
     delivery_blocked = False
+    delivery_blocked_reason = None
 
     if not post_checks["passed"]:
         logger.warning("Post-generation checks found issues — attempting one regeneration")
@@ -315,11 +338,13 @@ def run_pipeline():
             if not post_checks["passed"]:
                 logger.error("Post-generation checks STILL FAILED after retry — delivery BLOCKED")
                 delivery_blocked = True
+                delivery_blocked_reason = "Fact-check failed after retry"
             else:
                 logger.info("Post-generation checks PASSED after retry")
         except Exception as e:
             logger.error("Regeneration FAILED: %s — delivery BLOCKED", e)
             delivery_blocked = True
+            delivery_blocked_reason = f"Regeneration failed: {e}"
     else:
         logger.info("Post-generation checks PASSED")
 
@@ -330,12 +355,24 @@ def run_pipeline():
 
     report_path = save_report(report_text, post_checks, news_data, config)
 
-    # Step 6: Deliver via WeChat (gated on fact-check results)
+    # Step 6: Deliver via configured providers (gated on fact-check results)
     if delivery_blocked:
         logger.warning("Delivery BLOCKED — report saved locally for manual review: %s", report_path)
-        delivery_result = {"success": False, "error": "Delivery blocked: fact-check failed after retry"}
+        delivery_result = notify_event(
+            EVENT_DELIVERY_BLOCKED,
+            config=config,
+            report_path=report_path,
+            review_flags=post_checks.get("review_flags", []),
+            reason=delivery_blocked_reason,
+        )
     else:
-        delivery_result = deliver_report(report_text, config)
+        delivery_result = deliver_report(
+            report_text,
+            config,
+            report_path=report_path,
+            fact_check=post_checks,
+            generated_at=generation_result.get("generated_at"),
+        )
 
     # Summary
     elapsed = (datetime.now() - start_time).total_seconds()
@@ -343,7 +380,11 @@ def run_pipeline():
     logger.info("Pipeline completed in %.1f seconds", elapsed)
     logger.info("Report: %s", report_path)
     logger.info("Fact-check: %s", "PASSED" if post_checks["passed"] else "NEEDS REVIEW")
-    logger.info("Delivery: %s", "BLOCKED" if delivery_blocked else ("OK" if delivery_result.get("success") else delivery_result.get("error", "skipped")))
+    delivery_summary = summarize_delivery_result(delivery_result)
+    if delivery_blocked:
+        logger.info("Delivery: BLOCKED; alerts: %s", delivery_summary)
+    else:
+        logger.info("Delivery: %s", delivery_summary)
     logger.info("=" * 60)
     log_report_snapshot(report_path, report_text)
 
@@ -386,6 +427,10 @@ def main():
         sys.exit(130)
     except Exception as e:
         logger.exception("Unexpected pipeline error: %s", e)
+        try:
+            notify_event(EVENT_PIPELINE_EXCEPTION, exception=e)
+        except Exception as notify_exc:
+            logger.error("Failed to send exception notification: %s", notify_exc)
         sys.exit(1)
 
 

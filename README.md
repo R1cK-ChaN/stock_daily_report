@@ -42,7 +42,7 @@ TRIGGER: cron at 15:30 CST (or manual run)
                 │
                 ▼
        Save → output/YYYY-MM-DD/report.md
-       Deliver → WeChat (optional)
+       Deliver → WeChat / Feishu (optional)
 ```
 
 ## Project Structure
@@ -61,7 +61,13 @@ TRIGGER: cron at 15:30 CST (or manual run)
 │   ├── checker/
 │   │   └── fact_check.py           # 3-layer verification
 │   └── delivery/
+│       ├── common.py               # Shared webhook transport + helpers
+│       ├── dispatcher.py           # Event routing across delivery providers
+│       ├── feishu.py               # Feishu custom bot notifications
 │       └── wechat.py               # WeChat group webhook push
+├── tests/
+│   ├── test_delivery_dispatcher.py # Notification routing tests
+│   └── test_delivery_feishu.py     # Feishu webhook tests
 ├── config/
 │   └── settings.yaml               # Model, indices, thresholds, toggles
 ├── template/
@@ -95,9 +101,15 @@ The `.env` file:
 ```
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
 WECHAT_WEBHOOK_URL=              # optional
+FEISHU_ENABLED=false            # optional
+FEISHU_WEBHOOK_URL=             # optional
+FEISHU_SECRET=                  # optional
+FEISHU_TIMEOUT_SECONDS=10
+FEISHU_RETRY_COUNT=2
 ```
 
 For WeChat delivery, also set `wechat.enabled: true` in `config/settings.yaml`.
+Feishu is env-only and does not require a YAML toggle.
 
 ## Usage
 
@@ -113,7 +125,9 @@ The pipeline will:
 4. Validate data freshness, completeness, and value ranges
 5. Generate report via Gemini 3 Flash on OpenRouter (prompt includes only pre-ranked headlines)
 6. Fact-check: cross-verify numbers + LLM claim verification
-7. Save to `output/YYYY-MM-DD/report.md` and optionally push to WeChat
+7. Save to `output/YYYY-MM-DD/report.md`
+8. Optionally push the successful report to WeChat and/or Feishu
+9. Optionally push Feishu alerts for blocked delivery, pipeline failures, and uncaught exceptions
 
 ## Scheduling (Cron)
 
@@ -178,3 +192,43 @@ Reports with unverified numbers or ungrounded claims are flagged `[NEEDS REVIEW]
 - **Validation**: max daily change threshold, index value ranges
 - **News**: max headlines (50), sources (eastmoney_global, cls, futu), ranking config (keyword_top_n, llm_top_n, llm_ranking_enabled)
 - **WeChat**: enable/disable delivery, message format
+
+Feishu delivery is configured only through environment variables:
+
+- `FEISHU_ENABLED`: master switch for Feishu notifications
+- `FEISHU_WEBHOOK_URL`: Feishu custom bot webhook URL
+- `FEISHU_SECRET`: optional signature secret for secured Feishu bots
+- `FEISHU_TIMEOUT_SECONDS`: per-request timeout
+- `FEISHU_RETRY_COUNT`: retry count for transient errors
+
+## Notification Delivery
+
+### WeChat
+
+- Controlled by `wechat.enabled` in `config/settings.yaml`
+- Uses `WECHAT_WEBHOOK_URL` from `.env`
+- Sends the successful report only
+
+### Feishu
+
+- Controlled by `FEISHU_ENABLED` in `.env`
+- Uses Feishu custom bot webhook + optional request signing
+- Sends:
+  - successful report notifications
+  - blocked delivery alerts after fact-check retry failure
+  - pipeline failure alerts
+  - uncaught exception alerts
+- Failures are logged but do not crash the main business flow
+- Payloads are truncated to stay within Feishu custom bot size limits
+
+### Security Notes
+
+- Never commit `WECHAT_WEBHOOK_URL`, `FEISHU_WEBHOOK_URL`, or `FEISHU_SECRET`
+- If Feishu signature verification is enabled on the bot, set `FEISHU_SECRET`
+- Feishu custom bots are rate-limited; avoid scheduling many jobs exactly at `:00` or `:30`
+
+## Testing
+
+```bash
+python -m unittest discover -s tests -v
+```

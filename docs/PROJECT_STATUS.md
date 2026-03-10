@@ -1,6 +1,6 @@
 # Project Status — Daily Stock Report
 
-> Last updated: 2026-03-01
+> Last updated: 2026-03-10
 
 ## Current State: Core Pipeline Functional
 
@@ -15,8 +15,10 @@ The end-to-end pipeline runs from data fetching through validation to report gen
 | `src/fetchers/pboc.py` | Working | Repo rates, SHIBOR, LPR all fetch correctly. |
 | `src/generator/report_generator.py` | Working | Requires `ANTHROPIC_API_KEY` env var. |
 | `src/checker/fact_check.py` | Working | Pre-validation passes. Post-validation (number cross-check + LLM verifier) ready. |
-| `src/delivery/wechat.py` | Untested | Needs `WECHAT_WEBHOOK_URL` env var and `wechat.enabled: true` in config. |
-| `src/main.py` | Working | Parallel data fetch, sequential validate → generate → check → save. |
+| `src/delivery/wechat.py` | Working | Uses shared dispatcher/transport; still requires `WECHAT_WEBHOOK_URL` env var and `wechat.enabled: true` in config. |
+| `src/delivery/feishu.py` | Working | Env-only Feishu custom bot support with optional secret signing, retries, and alert notifications. Covered by unit tests. |
+| `src/delivery/dispatcher.py` | Working | Routes success reports to WeChat/Feishu and failure alerts to Feishu. Covered by unit tests. |
+| `src/main.py` | Working | Parallel data fetch, sequential validate → generate → check → save, plus event-based notifications. |
 
 ## Data Source Reliability (from testing)
 
@@ -63,13 +65,15 @@ The end-to-end pipeline runs from data fetching through validation to report gen
 - Python 3.12+
 - `ANTHROPIC_API_KEY` environment variable (required for report generation)
 - `WECHAT_WEBHOOK_URL` environment variable (optional, for delivery)
+- `FEISHU_ENABLED` / `FEISHU_WEBHOOK_URL` environment variables (optional, for Feishu delivery)
+- `FEISHU_SECRET` environment variable (optional, if Feishu signature verification is enabled)
 - Network access to: finance.sina.com.cn, eastmoney.com, data.eastmoney.com
 
 ## Next Steps
 
 - [ ] Test full pipeline on a weekday with `ANTHROPIC_API_KEY` set
 - [ ] Add Sina-based alternatives for sector and breadth data
-- [ ] Update `.env.example` with correct variables
 - [ ] Test WeChat delivery with a real webhook
+- [ ] Test Feishu delivery with a real webhook and signed bot
 - [ ] Add cron job setup script
 - [ ] Consider adding request delays between EM API calls to reduce rate-limiting

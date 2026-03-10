@@ -6,20 +6,23 @@ Sends the generated report as a markdown message to a WeChat group.
 
 import logging
 import os
-from typing import Any
 
-import requests
+from src.delivery.common import make_result, post_json_with_retry
 
 logger = logging.getLogger(__name__)
 
 # WeChat webhook message size limit (roughly 4KB for markdown)
 MAX_MESSAGE_LENGTH = 4000
+PROVIDER_NAME = "wechat"
 
 
 def send_wechat_message(
     content: str,
     webhook_url: str | None = None,
     msg_type: str = "markdown",
+    timeout_seconds: int = 10,
+    retry_count: int = 0,
+    event: str = "report_success",
 ) -> dict:
     """
     Send a message to WeChat group via webhook.
@@ -30,18 +33,20 @@ def send_wechat_message(
         msg_type: "markdown" or "text"
 
     Returns:
-        Dict with 'success', 'response', 'error'.
+        Normalized delivery result dict.
     """
     if webhook_url is None:
         webhook_url = os.environ.get("WECHAT_WEBHOOK_URL", "")
 
     if not webhook_url:
         logger.warning("No WeChat webhook URL configured, skipping delivery")
-        return {
-            "success": False,
-            "response": None,
-            "error": "No webhook URL configured",
-        }
+        return make_result(
+            PROVIDER_NAME,
+            success=False,
+            response=None,
+            error="No webhook URL configured",
+            event=event,
+        )
 
     # Truncate if too long
     if len(content) > MAX_MESSAGE_LENGTH:
@@ -58,30 +63,24 @@ def send_wechat_message(
         },
     }
 
-    try:
-        resp = requests.post(webhook_url, json=payload, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
+    result = post_json_with_retry(
+        provider=PROVIDER_NAME,
+        url=webhook_url,
+        payload=payload,
+        timeout_seconds=timeout_seconds,
+        retry_count=retry_count,
+        event=event,
+        success_evaluator=lambda body, _: isinstance(body, dict) and body.get("errcode", -1) == 0,
+        error_extractor=lambda body, response: (
+            body.get("errmsg")
+            if isinstance(body, dict)
+            else f"HTTP {response.status_code}"
+        ) or f"HTTP {response.status_code}",
+    )
 
-        success = result.get("errcode", -1) == 0
-        if success:
-            logger.info("WeChat message sent successfully")
-        else:
-            logger.error("WeChat API error: %s", result)
-
-        return {
-            "success": success,
-            "response": result,
-            "error": None if success else result.get("errmsg", "Unknown error"),
-        }
-
-    except requests.RequestException as e:
-        logger.error("WeChat delivery failed: %s", e)
-        return {
-            "success": False,
-            "response": None,
-            "error": str(e),
-        }
+    if result["success"]:
+        logger.info("WeChat message sent successfully")
+    return result
 
 
 def deliver_report(report_text: str, config: dict) -> dict:
@@ -99,11 +98,13 @@ def deliver_report(report_text: str, config: dict) -> dict:
 
     if not wechat_cfg.get("enabled", False):
         logger.info("WeChat delivery is disabled in config")
-        return {
-            "success": True,
-            "skipped": True,
-            "reason": "WeChat delivery disabled in config",
-        }
+        return make_result(
+            PROVIDER_NAME,
+            success=True,
+            skipped=True,
+            event="report_success",
+            reason="WeChat delivery disabled in config",
+        )
 
     webhook_url = os.environ.get("WECHAT_WEBHOOK_URL", "")
     msg_type = wechat_cfg.get("msg_type", "markdown")
@@ -112,4 +113,5 @@ def deliver_report(report_text: str, config: dict) -> dict:
         content=report_text,
         webhook_url=webhook_url,
         msg_type=msg_type,
+        event="report_success",
     )

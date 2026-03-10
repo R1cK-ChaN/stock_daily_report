@@ -28,7 +28,10 @@ SYSTEM_PROMPT = """你是一位专业的中国A股市场分析师，负责撰写
 5. 报告使用中文撰写
 6. 每个观点都必须有数据支撑
 7. 即使新闻标题中提到了某些数字（如涨停数、连板数），除非这些数字也出现在对应的结构化数据字段中，否则不得将其作为精确统计数据引用。新闻中的数字只能作为新闻引用，必须注明来源。
-8. 禁止使用“接近八成/超过九成/不足五成”等模糊比例口径，若要描述占比必须给出可由结构化数据直接计算的明确百分比。"""
+8. 禁止使用“接近八成/超过九成/不足五成”等模糊比例口径，若要描述占比必须给出可由结构化数据直接计算的明确百分比。
+9. 对于市场广度占比，只能原样引用结构化数据里明确给出的百分比，禁止自行心算、估算或改写。
+10. 若未提供上一交易日、历史对比或环比字段，禁止写“较上一交易日放量/缩量”“连续X日”“刷新纪录”等比较性表述。
+11. 央行公开市场操作中的 total_amount 仅表示当日操作总量/中标总量，禁止改写为“净投放”“净回笼”或“投放资金”。"""
 
 
 def _fmt_amount(yuan: float) -> str:
@@ -87,11 +90,25 @@ def _format_breadth_data(breadth: dict) -> str:
         )
     total_amount = breadth.get("total_amount")
     amount_text = _fmt_amount(float(total_amount)) if total_amount is not None else "N/A"
+    ratio_parts = []
+    for label, key in (
+        ("上涨占比", "up_ratio_pct"),
+        ("下跌占比", "down_ratio_pct"),
+        ("平盘占比", "flat_ratio_pct"),
+    ):
+        value = breadth.get(key)
+        if value is None:
+            continue
+        ratio_parts.append(f"{label}: {float(value):.2f}%")
+
+    ratio_line = "\n" + "，".join(ratio_parts) if ratio_parts else ""
     return (
         f"上涨: {breadth.get('up_count', 'N/A')}家, 下跌: {breadth.get('down_count', 'N/A')}家, "
         f"平盘: {breadth.get('flat_count', 'N/A')}家\n"
         f"涨停: {breadth.get('limit_up', 'N/A')}家, 跌停: {breadth.get('limit_down', 'N/A')}家\n"
-        f"两市总成交额: {amount_text}"
+        f"两市总成交额（唯一可用的全市场成交额）: {amount_text}"
+        f"{ratio_line}\n"
+        "约束: 若描述市场广度占比，只能直接引用以上百分比，禁止自行换算。"
     )
 
 
@@ -146,13 +163,13 @@ def _format_pboc_data(pboc_data: dict) -> str:
             if op.get("win_amount") is not None:
                 parts.append(f"中标量: {op['win_amount']:.1f}亿元")
             lines.append(f"- {', '.join(parts)}")
-        lines.append(f"合计投放: {omo.get('total_amount', 0):.1f}亿元")
+        lines.append(f"操作总量: {omo.get('total_amount', 0):.1f}亿元")
         if (
             omo.get("maturity_amount") is None
             and omo.get("net_injection") is None
             and omo.get("net_amount") is None
         ):
-            lines.append("约束: 未提供到期与净投放/净回笼数据，禁止补充此类数字")
+            lines.append("约束: 未提供到期与净投放/净回笼数据，禁止补充此类数字，也禁止把操作总量改写为投放资金")
         lines.append(f"来源: {omo.get('url', '')}")
     else:
         lines.append("\n【公开市场操作公告】今日无公开市场操作公告")
@@ -250,7 +267,7 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 
 一、A股收评（市场表现）
 - 概述今日大盘走势（上证、深证、创业板等主要指数涨跌）
-- 分析成交量变化
+- 概述成交额水平；仅可使用【一、主要指数行情】中的指数成交额和【市场广度】中的两市总成交额。若未提供上一交易日或环比字段，禁止写“较上一交易日放量/缩量”
 - 点评板块轮动（领涨/领跌板块及原因分析）
 - 市场情绪（涨跌家数、涨停跌停）
 - 字数：300-500字
@@ -264,7 +281,7 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 字数：200-400字
 
 三、央行逆回购（公开市场操作）
-- 今日操作情况（金额、期限、利率）
+- 今日操作情况（中标总量/操作总量、期限、利率）
 - 到期与净投放/回笼情况（仅当【三】数据明确提供该字段时才可写具体数字；否则跳过）
 - 仅基于回购利率、SHIBOR、LPR与公开市场操作数据进行资金面解读
 - 字数：150-300字
@@ -279,15 +296,20 @@ def build_generation_prompt(market_data: dict, news_data: dict, pboc_data: dict)
 - 如果某项数据缺失或不足以支撑分析，直接跳过，不需要提及缺失
 - 禁止使用“创出新高/新低、历史新高/新低、阶段性新高/新低”等需要历史序列支撑的表述
 - 禁止使用“接近X成/超过X成/不足X成”等模糊比例描述；若描述占比，必须给出明确百分比
+- 若提及市场上涨/下跌/平盘占比，只能直接引用【市场广度】中明确给出的百分比，禁止根据家数自行估算
+- 若未提供上一交易日、环比或历史序列字段，禁止出现“较上一交易日放量/缩量”“连续X日”“创纪录”等比较性表述
+- 央行公开市场操作的 `操作总量` 不是 `净投放/净回笼`，也不要改写成“投放资金”
 - 使用专业财经术语
 - 语气客观中立
 - 输出纯文本，不要使用任何Markdown格式符号（如##、**、*、-等），只用普通文字和换行
 
 严格数据分区（极其重要）：
 - 第一部分"A股收评"只能使用【一、主要指数行情】【市场广度】【板块表现】的结构化数据，禁止引用金十快讯中的任何内容
+- 第一部分禁止引用新闻中的“较上一交易日缩量/放量”“南向/北向资金”“刷新纪录”等内容
 - 第二部分"基本面分析"只能使用【二、今日财经新闻与经济数据】中的金十快讯内容，只使用快讯中明确出现的事实和数字，不要补充快讯中未提及的具体数字或细节
 - 第三部分"央行逆回购"只能使用【三、央行公开市场操作】的结构化数据，禁止从金十快讯中提取央行操作信息
 - 若【三】未提供到期或净投放字段，禁止出现“到期X亿元/净投放(回笼)X亿元”等具体数字
+- 第三部分若引用 `操作总量`，必须表述为“操作总量”或“中标总量”，禁止改写成“投放资金”
 - 第三部分禁止引用“两会表态、降准降息预期、稳增长政策”等新闻口径内容
 - 第四部分"总结与展望"可综合引用前三部分已确认的内容"""
 

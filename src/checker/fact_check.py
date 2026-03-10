@@ -18,6 +18,23 @@ import openai
 
 logger = logging.getLogger(__name__)
 
+POSITIVE_VERIFICATION_PATTERNS = (
+    r"核查.{0,8}(通过|已通过)",
+    r"验证.{0,8}(通过|已通过)",
+    r"未发现.{0,12}(问题|不一致|未获支持|不支持|捏造)",
+    r"(所有|全部).{0,12}(均有数据支持|都有数据支持)",
+    r"(整体|总体).{0,12}(通过|无问题)",
+)
+NEGATIVE_VERIFICATION_PATTERNS = (
+    r"未通过",
+    r"不通过",
+    r"存在.{0,12}(问题|风险|不一致)",
+    r"(缺乏|没有).{0,8}支持",
+    r"未获支持",
+    r"unsupported",
+    r"fabricated",
+)
+
 
 # ────────────────────────────────────────────────────────────
 # Layer 1: Pre-LLM Data Validation
@@ -243,6 +260,46 @@ def _extract_numeric_literals(text: str) -> set[float]:
     return values
 
 
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort JSON object extraction for model responses with wrappers/code fences."""
+    if not text:
+        return None
+
+    candidates = [text.strip()]
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.IGNORECASE)
+    )
+
+    decoder = json.JSONDecoder()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        for start in (m.start() for m in re.finditer(r"\{", candidate)):
+            try:
+                parsed, _ = decoder.raw_decode(candidate[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    return None
+
+
+def _looks_like_positive_verification(text: str) -> bool:
+    if not text:
+        return False
+    if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in NEGATIVE_VERIFICATION_PATTERNS):
+        return False
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in POSITIVE_VERIFICATION_PATTERNS)
+
+
 def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | None = None) -> set[float]:
     """
     Build a set of all numbers present in the source data.
@@ -266,10 +323,22 @@ def build_source_numbers(market_data: dict, pboc_data: dict, news_data: dict | N
 
     # Breadth data
     breadth = market_data.get("breadth", {})
-    for key in ["up_count", "down_count", "flat_count", "limit_up", "limit_down", "total_stocks", "total_amount"]:
+    for key in [
+        "up_count",
+        "down_count",
+        "flat_count",
+        "limit_up",
+        "limit_down",
+        "total_stocks",
+        "total_amount",
+        "up_ratio_pct",
+        "down_ratio_pct",
+        "flat_ratio_pct",
+    ]:
         val = breadth.get(key)
         if val is not None:
             numbers.add(round(float(val), 2))
+            numbers.add(round(float(val), 1))
             if key == "total_amount":
                 numbers.add(round(float(val) / 1e8, 2))  # 亿元
                 numbers.add(round(float(val) / 1e12, 2))  # 万亿元
@@ -550,14 +619,7 @@ def verify_claims_with_llm(
 
         response_text = response.choices[0].message.content
 
-        # Try to parse JSON from response
-        verification_result = None
-        json_match = re.search(r'\{[\s\S]*\}', response_text)
-        if json_match:
-            try:
-                verification_result = json.loads(json_match.group())
-            except json.JSONDecodeError:
-                verification_result = None
+        verification_result = _parse_json_object(response_text)
 
         if verification_result is None:
             # Fallback: infer overall status from raw text when JSON is malformed
@@ -572,10 +634,29 @@ def verify_claims_with_llm(
                 "summary": response_text,
             }
 
+        issues = verification_result.get("issues", [])
+        if not isinstance(issues, list):
+            issues = []
+
+        overall_verified = verification_result.get("overall_verified", None)
+        if isinstance(overall_verified, str):
+            lowered = overall_verified.strip().lower()
+            if lowered == "true":
+                overall_verified = True
+            elif lowered == "false":
+                overall_verified = False
+            else:
+                overall_verified = None
+        if overall_verified is None:
+            if issues:
+                overall_verified = False
+            elif _looks_like_positive_verification(response_text):
+                overall_verified = True
+
         usage = response.usage
         result = {
-            "verified": verification_result.get("overall_verified", None),
-            "issues": verification_result.get("issues", []),
+            "verified": overall_verified,
+            "issues": issues,
             "summary": verification_result.get("summary", ""),
             "verifier_response": response_text,
             "usage": {
@@ -585,10 +666,12 @@ def verify_claims_with_llm(
         }
 
         critical_issues = [i for i in result["issues"] if i.get("severity") == "critical"]
-        if critical_issues:
+        if result["verified"] is True and not critical_issues:
+            logger.info("LLM verification passed")
+        elif critical_issues or result["verified"] is False:
             logger.warning("LLM verification found %d critical issues", len(critical_issues))
         else:
-            logger.info("LLM verification passed")
+            logger.warning("LLM verification returned an indeterminate result")
 
         return result
 
