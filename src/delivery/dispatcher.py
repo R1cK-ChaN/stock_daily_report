@@ -62,12 +62,24 @@ def _build_delivery_blocked_message(
     report_path: str | Path | None,
     review_flags: list[str] | None,
     reason: str | None,
+    attempt: int | None = None,
+    max_attempts: int | None = None,
+    attempt_mode: str | None = None,
+    next_delay_seconds: int | None = None,
+    is_final_attempt: bool = False,
 ) -> str:
     lines = [
-        "[Alert] Delivery blocked after fact-check retry",
+        "[Alert] Delivery blocked after fact-check",
         f"Time: {datetime.now().isoformat(timespec='seconds')}",
         f"Path: {_format_path(report_path)}",
     ]
+    if attempt is not None and max_attempts is not None:
+        lines.append(f"Attempt: {attempt}/{max_attempts}")
+    if attempt_mode:
+        lines.append(f"Mode: {attempt_mode}")
+    lines.append(f"Final failure: {'yes' if is_final_attempt else 'no'}")
+    if next_delay_seconds is not None:
+        lines.append(f"Next retry in: {next_delay_seconds}s")
     if reason:
         lines.append(f"Reason: {reason}")
     lines.append("Review flags:")
@@ -182,6 +194,11 @@ def notify_event(event: str, *, config: dict | None = None, **context: Any) -> d
             report_path=context.get("report_path"),
             review_flags=context.get("review_flags"),
             reason=context.get("reason"),
+            attempt=context.get("attempt"),
+            max_attempts=context.get("max_attempts"),
+            attempt_mode=context.get("attempt_mode"),
+            next_delay_seconds=context.get("next_delay_seconds"),
+            is_final_attempt=bool(context.get("is_final_attempt", False)),
         )
     elif event == EVENT_PIPELINE_FAILURE:
         content = _build_pipeline_failure_message(

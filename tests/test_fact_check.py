@@ -6,7 +6,7 @@ import pandas as pd
 
 from src.checker.fact_check import build_source_numbers, verify_claims_with_llm
 from src.fetchers.market_data import _compute_breadth
-from src.generator.report_generator import build_generation_prompt
+from src.generator.report_generator import build_generation_prompt, clean_report_style
 
 
 class FactCheckRegressionTests(unittest.TestCase):
@@ -49,6 +49,24 @@ class FactCheckRegressionTests(unittest.TestCase):
         self.assertIn("上涨占比: 83.03%", prompt)
         self.assertIn("若提及市场上涨/下跌/平盘占比，只能直接引用【市场广度】中明确给出的百分比", prompt)
         self.assertIn("禁止写“较上一交易日放量/缩量”", prompt)
+
+    def test_build_generation_prompt_adds_domestic_and_international_fundamental_structure(self):
+        prompt = build_generation_prompt(
+            {"indices": [], "sectors": {}, "breadth": {}},
+            {"market_news": []},
+            {"has_data": False},
+        )
+
+        self.assertIn("一、市场表现", prompt)
+        self.assertIn("三、央行动态", prompt)
+        self.assertIn("四、市场观察摘要", prompt)
+        self.assertIn("国内方面：", prompt)
+        self.assertIn("国际方面：", prompt)
+        self.assertIn("国际方面优先解读美国宏观指标及美联储政策信号", prompt)
+        self.assertIn("机构、券商、外资、投行", prompt)
+        self.assertIn("禁止使用这些表达：", prompt)
+        self.assertIn("整体来看", prompt)
+        self.assertIn("投资者需关注", prompt)
 
     def test_build_generation_prompt_labels_omo_total_as_operation_total(self):
         prompt = build_generation_prompt(
@@ -109,6 +127,21 @@ class FactCheckRegressionTests(unittest.TestCase):
 
         self.assertTrue(result["verified"])
         self.assertEqual(result["issues"], [])
+
+    def test_clean_report_style_normalizes_titles_and_removes_filler_phrases(self):
+        report = """一、A股收评（市场表现）
+整体来看，市场震荡整理。
+
+四、总结与展望
+短期展望方面，投资者需关注政策节奏，有望改善风险偏好。"""
+
+        cleaned = clean_report_style(report)
+
+        self.assertIn("一、市场表现", cleaned)
+        self.assertIn("四、市场观察摘要", cleaned)
+        self.assertIn("市场震荡整理。", cleaned)
+        for phrase in ("整体来看", "总结与展望", "短期展望", "投资者需关注", "有望"):
+            self.assertNotIn(phrase, cleaned)
 
 
 if __name__ == "__main__":

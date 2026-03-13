@@ -13,8 +13,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime
 
 import openai
 
@@ -91,6 +90,31 @@ NOISE_KEYWORDS = [
     "advertisement",
 ]
 
+INSTITUTION_VIEW_KEYWORDS = [
+    "机构观点", "券商", "外资", "投行", "分析师", "首席", "策略师",
+    "高盛", "摩根士丹利", "摩根大通", "瑞银", "花旗", "美银",
+    "凯投宏观", "中金", "中信证券", "中信建投", "华泰证券", "申万宏源",
+    "国泰海通", "广发证券", "招商证券", "兴业证券", "天风证券",
+]
+
+US_MACRO_PRIORITY_KEYWORDS = [
+    "美国cpi", "美国ppi", "美国pmi", "美国非农", "美国失业率", "美国零售销售",
+    "美国贸易", "美国房地产", "美国住房", "新屋开工", "成屋销售", "耐用品订单",
+    "美联储资产负债表", "fed balance sheet", "quantitative tightening", "qt",
+    "cpi", "ppi", "nonfarm", "unemployment", "retail sales", "housing starts",
+    "existing home sales", "trade balance", "jobless claims",
+]
+
+LOW_VALUE_COMPANY_KEYWORDS = [
+    "净利润", "扭亏", "控股股东", "股东变更", "减持", "增持", "回购",
+    "公告", "签约", "中标", "预增", "预亏", "业绩快报", "业绩预告",
+    "分红", "解禁", "股权激励",
+]
+
+
+def _count_keyword_matches(text: str, keywords: list[str]) -> int:
+    return sum(1 for kw in keywords if kw in text)
+
 
 def _compute_keyword_score(title: str, content: str) -> float:
     """Compute keyword-based relevance score for a single news item."""
@@ -109,6 +133,18 @@ def _compute_keyword_score(title: str, content: str) -> float:
     for kw in NOISE_KEYWORDS:
         if kw in text:
             score -= 5
+
+    institution_matches = _count_keyword_matches(text, INSTITUTION_VIEW_KEYWORDS)
+    us_macro_matches = _count_keyword_matches(text, US_MACRO_PRIORITY_KEYWORDS)
+    low_value_company_matches = _count_keyword_matches(text, LOW_VALUE_COMPANY_KEYWORDS)
+
+    score += institution_matches * 6
+    score += us_macro_matches * 4
+    score -= low_value_company_matches * 5
+
+    has_macro_signal = tier1_matches > 0 or _count_keyword_matches(text, KEYWORD_TIERS[8]) > 0
+    if low_value_company_matches and not has_macro_signal and institution_matches == 0:
+        score *= 0.6
 
     # Compounding: 2+ tier-1 matches -> x1.5
     if tier1_matches >= 2:
@@ -193,13 +229,15 @@ def llm_rank(
 
     items_text = "\n".join(item_lines)
 
-    prompt = f"""你是A股市场分析师。请从以下金十快讯中选出对A股市场影响最大的{top_n}条，按影响力从高到低排序。
+    prompt = f"""你是A股市场策略研究员。请从以下金十快讯中选出对A股市场最值得写入日报的{top_n}条，按优先级从高到低排序。
 
 选择标准：
-1. 宏观政策（央行、国务院、证监会政策变化）> 经济数据发布 > 行业政策 > 个股事件 > 海外市场
-2. 优先选择有实质内容的新闻（政策变化、数据发布、重大事件）
-3. 过滤掉：日程预告、数据中心更新通知、直播推广、外汇期权到期提示
-4. 如果是综合摘要类消息（编号列表），评估其中最重要的单条信息
+1. 国内宏观政策、经济数据、中国政策动向 > 美国宏观、美联储、美国就业/房地产/贸易 > 行业政策 > 机构/券商/外资/投行观点 > 个股事件
+2. 若出现机构、券商、外资、投行观点，优先保留至少1条，供“市场观察摘要”使用
+3. 普通公司业绩、股东变更、减持增持、回购、签约、中标等公告只有在宏观素材不足时才补位
+4. 优先选择有实质内容的新闻（政策变化、数据发布、重大事件），不要追求覆盖面
+5. 过滤掉：日程预告、数据中心更新通知、直播推广、外汇期权到期提示
+6. 如果是综合摘要类消息（编号列表），评估其中最重要的单条信息
 
 只返回前{top_n}条，JSON格式：[{{"rank": 1, "id": N, "reason": "10字以内理由"}}, ...]
 

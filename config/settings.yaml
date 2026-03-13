@@ -1,13 +1,15 @@
 # Daily China A-Shares Market Report — Configuration
 
-# Schedule
+# Schedule metadata for operators only.
+# The runtime does not read this block; the actual 15:05 trigger is installed via macOS launchd.
 schedule:
   timezone: "Asia/Shanghai"
-  run_time: "15:30"  # After market close at 15:00 CST
+  run_time: "15:05"  # After market close at 15:00 CST
 
 # API Keys (set via environment variables for security)
 api_keys:
-  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  openrouter_api_key: ${OPENROUTER_API_KEY}
+  anthropic_api_key: ${ANTHROPIC_API_KEY}  # compatibility fallback only
   wechat_webhook_url: ${WECHAT_WEBHOOK_URL}
 
 # LLM settings (via OpenRouter)
@@ -16,6 +18,14 @@ llm:
   model: "google/gemini-3-flash-preview"
   max_tokens: 4096
   temperature: 0.3  # Low temperature for factual reporting
+
+delivery_retry:
+  enabled: true
+  max_attempts: 10
+  initial_backoff_seconds: 30
+  backoff_multiplier: 2
+  max_backoff_seconds: 300
+  notify_each_blocked: true
 
 # Market indices to track
 # code format: "1.XXXXXX" for Shanghai, "0.XXXXXX" for Shenzhen
@@ -68,7 +78,7 @@ news:
 
   ranking:
     keyword_top_n: 15           # Wider first pass for high-volume Chinese feed
-    llm_top_n: 8                # More items reach writer to reduce hallucination
+    llm_top_n: 6                # Keep only the highest-priority macro/viewpoint items
     llm_ranking_enabled: true
     llm_max_tokens: 800
 

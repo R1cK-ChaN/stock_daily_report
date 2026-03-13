@@ -13,7 +13,7 @@ The end-to-end pipeline runs from data fetching through validation to report gen
 | `src/fetchers/market_data.py` | Working | Sina (primary) fetches all 5 indices reliably. EM (fallback) intermittently rate-limited. |
 | `src/fetchers/news.py` | Working | 东方财富 news OK. CCTV returns 0 on weekends. RSS/CLS may need URL update. |
 | `src/fetchers/pboc.py` | Working | Repo rates, SHIBOR, LPR all fetch correctly. |
-| `src/generator/report_generator.py` | Working | Requires `ANTHROPIC_API_KEY` env var. |
+| `src/generator/report_generator.py` | Working | Uses `OPENROUTER_API_KEY`; `ANTHROPIC_API_KEY` remains a compatibility fallback. |
 | `src/checker/fact_check.py` | Working | Pre-validation passes. Post-validation (number cross-check + LLM verifier) ready. |
 | `src/delivery/wechat.py` | Working | Uses shared dispatcher/transport; still requires `WECHAT_WEBHOOK_URL` env var and `wechat.enabled: true` in config. |
 | `src/delivery/feishu.py` | Working | Env-only Feishu custom bot support with optional secret signing, retries, and alert notifications. Covered by unit tests. |
@@ -63,7 +63,7 @@ The end-to-end pipeline runs from data fetching through validation to report gen
 ## Environment Requirements
 
 - Python 3.12+
-- `ANTHROPIC_API_KEY` environment variable (required for report generation)
+- `OPENROUTER_API_KEY` environment variable (required for report generation)
 - `WECHAT_WEBHOOK_URL` environment variable (optional, for delivery)
 - `FEISHU_ENABLED` / `FEISHU_WEBHOOK_URL` environment variables (optional, for Feishu delivery)
 - `FEISHU_SECRET` environment variable (optional, if Feishu signature verification is enabled)
@@ -75,5 +75,5 @@ The end-to-end pipeline runs from data fetching through validation to report gen
 - [ ] Add Sina-based alternatives for sector and breadth data
 - [ ] Test WeChat delivery with a real webhook
 - [ ] Test Feishu delivery with a real webhook and signed bot
-- [ ] Add cron job setup script
+- [ ] Verify the installed launchd task on the next trading day
 - [ ] Consider adding request delays between EM API calls to reduce rate-limiting

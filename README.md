@@ -12,7 +12,7 @@ Automated pipeline that generates a daily China A-shares market report after mar
 ## Architecture
 
 ```
-TRIGGER: cron at 15:30 CST (or manual run)
+TRIGGER: macOS launchd at 15:05 Beijing time (or manual run)
     │
     ├── Trading day? (Sina calendar) ── No ──► Skip
     │
@@ -74,6 +74,12 @@ TRIGGER: cron at 15:30 CST (or manual run)
 │   └── daily_market_report.md      # Report structure reference
 ├── docs/
 │   └── PROJECT_STATUS.md           # Development status & known issues
+├── scripts/
+│   ├── run_daily_report.sh         # launchd-safe wrapper for scheduled runs
+│   └── install_launch_agent.sh     # Installs/loads the macOS LaunchAgent
+├── launchd/
+│   └── com.kingjason.stock-daily-report.plist.template
+│                                  # LaunchAgent template with repo placeholders
 ├── output/                         # Generated reports by date
 │   └── YYYY-MM-DD/
 │       ├── report.md               # The generated report
@@ -100,12 +106,14 @@ cp .env.example .env
 The `.env` file:
 ```
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+ANTHROPIC_API_KEY=               # compatibility fallback only; prefer OPENROUTER_API_KEY
 WECHAT_WEBHOOK_URL=              # optional
 FEISHU_ENABLED=false            # optional
 FEISHU_WEBHOOK_URL=             # optional
 FEISHU_SECRET=                  # optional
 FEISHU_TIMEOUT_SECONDS=10
 FEISHU_RETRY_COUNT=2
+ALLOW_NEEDS_REVIEW_DELIVERY=false # keep false by default; set true manually only for test delivery
 ```
 
 For WeChat delivery, also set `wechat.enabled: true` in `config/settings.yaml`.
@@ -129,13 +137,38 @@ The pipeline will:
 8. Optionally push the successful report to WeChat and/or Feishu
 9. Optionally push Feishu alerts for blocked delivery, pipeline failures, and uncaught exceptions
 
-## Scheduling (Cron)
+## Scheduling (macOS launchd)
 
-```
-30 15 * * * cd /path/to/stock_daily_report && .venv/bin/python src/main.py
+```bash
+./scripts/install_launch_agent.sh
 ```
 
-The trading day check is built-in — safe to run daily including weekends.
+This installs `~/Library/LaunchAgents/com.kingjason.stock-daily-report.plist`
+with:
+
+- `WorkingDirectory=/Users/kingjason/资源/stock_daily_report`
+- `ProgramArguments=/Users/kingjason/资源/stock_daily_report/scripts/run_daily_report.sh`
+- `StartCalendarInterval={ Hour=15, Minute=5 }`
+- `RunAtLoad=false`
+- stdout/stderr logs under `output/scheduler_logs/`
+
+Useful launchd commands:
+
+```bash
+launchctl print gui/$(id -u)/com.kingjason.stock-daily-report
+launchctl kickstart -k gui/$(id -u)/com.kingjason.stock-daily-report
+```
+
+The trading day check is built-in, so the job is safe to run every day.
+
+The scheduled wrapper always uses `.venv/bin/python` and exports `TZ=Asia/Shanghai`.
+Blocked deliveries now stay blocked and enter the built-in retry controller
+(up to 10 attempts by default). Manual runs can still opt into forced test delivery:
+
+```bash
+source .venv/bin/activate
+python src/main.py
+```
 
 ## Data Sources
 
@@ -193,6 +226,9 @@ Reports with unverified numbers or ungrounded claims are flagged `[NEEDS REVIEW]
 - **News**: max headlines (50), sources (eastmoney_global, cls, futu), ranking config (keyword_top_n, llm_top_n, llm_ranking_enabled)
 - **WeChat**: enable/disable delivery, message format
 
+The `schedule` block in `config/settings.yaml` is informational only. The runtime
+does not read it; the actual 15:05 trigger is owned by macOS `launchd`.
+
 Feishu delivery is configured only through environment variables:
 
 - `FEISHU_ENABLED`: master switch for Feishu notifications
@@ -200,6 +236,9 @@ Feishu delivery is configured only through environment variables:
 - `FEISHU_SECRET`: optional signature secret for secured Feishu bots
 - `FEISHU_TIMEOUT_SECONDS`: per-request timeout
 - `FEISHU_RETRY_COUNT`: retry count for transient errors
+
+Delivery retry behavior is configured in `config/settings.yaml` via `delivery_retry`
+(`max_attempts`, exponential backoff, and whether every blocked attempt notifies Feishu).
 
 ## Notification Delivery
 
@@ -215,7 +254,7 @@ Feishu delivery is configured only through environment variables:
 - Uses Feishu custom bot webhook + optional request signing
 - Sends:
   - successful report notifications
-  - blocked delivery alerts after fact-check retry failure
+  - blocked delivery alerts for each retry attempt, including attempt number and next delay
   - pipeline failure alerts
   - uncaught exception alerts
 - Failures are logged but do not crash the main business flow
@@ -230,5 +269,11 @@ Feishu delivery is configured only through environment variables:
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v
+./.venv/bin/python -m unittest discover -s tests -v
+```
+
+## Run the whole chain(plz indicate your own path)
+
+```bash
+cd /Users/kingjason/资源/stock_daily_report && source .venv/bin/activate && python src/main.py
 ```

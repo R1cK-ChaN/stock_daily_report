@@ -76,13 +76,23 @@ class DeliveryDispatcherTests(unittest.TestCase):
             EVENT_DELIVERY_BLOCKED,
             report_path="output/2026-03-10/report.md",
             review_flags=["[NEEDS REVIEW] example"],
-            reason="Fact-check failed after retry",
+            reason="Fact-check failed on attempt 2/10",
+            attempt=2,
+            max_attempts=10,
+            attempt_mode="same-data retry",
+            next_delay_seconds=60,
+            is_final_attempt=False,
         )
 
         self.assertTrue(result["success"])
         self.assertEqual(result["attempted_count"], 1)
         self.assertEqual(mock_feishu.call_count, 1)
-        self.assertIn("Delivery blocked after fact-check retry", mock_feishu.call_args.args[1])
+        message = mock_feishu.call_args.args[1]
+        self.assertIn("Delivery blocked after fact-check", message)
+        self.assertIn("Attempt: 2/10", message)
+        self.assertIn("Mode: same-data retry", message)
+        self.assertIn("Next retry in: 60s", message)
+        self.assertIn("Final failure: no", message)
 
     @patch("src.delivery.dispatcher.notify_feishu_event")
     def test_notify_event_formats_pipeline_exception(self, mock_feishu):
