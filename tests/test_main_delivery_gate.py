@@ -11,9 +11,9 @@ def _config(max_attempts: int = 10) -> dict:
         "delivery_retry": {
             "enabled": True,
             "max_attempts": max_attempts,
-            "initial_backoff_seconds": 30,
-            "backoff_multiplier": 2,
-            "max_backoff_seconds": 300,
+            "initial_backoff_seconds": 60,
+            "backoff_multiplier": 1,
+            "max_backoff_seconds": 60,
             "notify_each_blocked": True,
         }
     }
@@ -59,6 +59,13 @@ def _save_report_side_effect(*_args, **kwargs) -> Path:
 
 
 class MainDeliveryGateTests(unittest.TestCase):
+    def test_delivery_retry_backoff_seconds_stays_fixed_at_60(self):
+        retry_config = _config()["delivery_retry"]
+
+        self.assertEqual(main_module.delivery_retry_backoff_seconds(1, retry_config), 60)
+        self.assertEqual(main_module.delivery_retry_backoff_seconds(2, retry_config), 60)
+        self.assertEqual(main_module.delivery_retry_backoff_seconds(5, retry_config), 60)
+
     def test_run_pipeline_retries_until_successful_delivery(self):
         with (
             patch("src.main.is_trading_day", return_value=True),
@@ -106,7 +113,7 @@ class MainDeliveryGateTests(unittest.TestCase):
         self.assertEqual(mock_generate.call_count, 3)
         self.assertEqual(mock_notify.call_count, 2)
         self.assertEqual(mock_deliver.call_count, 1)
-        self.assertEqual(mock_sleep.call_args_list, [call(30), call(60)])
+        self.assertEqual(mock_sleep.call_args_list, [call(60), call(60)])
 
         second_call = mock_generate.call_args_list[1]
         self.assertEqual(second_call.kwargs["temperature_override"], 0.0)
@@ -165,7 +172,7 @@ class MainDeliveryGateTests(unittest.TestCase):
         self.assertEqual(mock_generate.call_count, 3)
         self.assertEqual(mock_notify.call_count, 3)
         self.assertEqual(mock_deliver.call_count, 0)
-        self.assertEqual(mock_sleep.call_args_list, [call(30), call(60)])
+        self.assertEqual(mock_sleep.call_args_list, [call(60), call(60)])
         self.assertIsNone(mock_generate.call_args_list[2].kwargs["temperature_override"])
 
     def test_run_pipeline_forces_delivery_when_override_is_enabled(self):

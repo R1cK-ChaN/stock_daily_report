@@ -27,7 +27,7 @@ Recent runs in `output/` show the current tone and structure: research-style Chi
 ## Pipeline Overview
 
 ```text
-Trigger: manual run or optional macOS launchd at 15:05 Asia/Shanghai
+Trigger: manual run or optional macOS launchd on weekdays at 15:01 Asia/Shanghai
     |
     v
 Trading day gate (Sina calendar, weekday fallback)
@@ -209,7 +209,7 @@ Feishu is also the alerting channel for:
 
 - Reports that pass post-generation checks are delivered immediately.
 - Reports that fail post-generation checks are marked `NEEDS REVIEW` and delivery is blocked by default.
-- Blocked runs are retried according to `delivery_retry.*`.
+- Blocked runs are retried according to `delivery_retry.*` with a fixed 60-second interval by default.
 - Retry artifacts are saved under `output/YYYY-MM-DD/attempts/`.
 - Setting `ALLOW_NEEDS_REVIEW_DELIVERY=true` forces a clearly labeled test delivery of a flagged report and disables the retry loop for that run.
 
@@ -219,7 +219,8 @@ Feishu is also the alerting channel for:
 ./scripts/install_launch_agent.sh
 ```
 
-This installs a LaunchAgent that runs the wrapper script at `15:05` Asia/Shanghai time and logs scheduler stdout/stderr under `output/scheduler_logs/`.
+This installs a LaunchAgent that runs the wrapper script on weekdays at `15:01` Asia/Shanghai time and logs scheduler stdout/stderr under `output/scheduler_logs/`.
+If you already installed the LaunchAgent, rerun `./scripts/install_launch_agent.sh` after pulling these changes so the existing job is replaced.
 
 Useful commands:
 

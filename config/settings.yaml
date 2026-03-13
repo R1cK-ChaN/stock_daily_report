@@ -1,10 +1,10 @@
 # Daily China A-Shares Market Report — Configuration
 
 # Schedule metadata for operators only.
-# The runtime does not read this block; the actual 15:05 trigger is installed via macOS launchd.
+# The runtime does not read this block; the actual weekday 15:01 trigger is installed via macOS launchd.
 schedule:
   timezone: "Asia/Shanghai"
-  run_time: "15:05"  # After market close at 15:00 CST
+  run_time: "15:01"  # After market close at 15:00 CST on trading weekdays
 
 # API Keys (set via environment variables for security)
 api_keys:
@@ -23,9 +23,9 @@ llm:
 delivery_retry:
   enabled: true
   max_attempts: 10
-  initial_backoff_seconds: 30
-  backoff_multiplier: 2
-  max_backoff_seconds: 300
+  initial_backoff_seconds: 60
+  backoff_multiplier: 1
+  max_backoff_seconds: 60
   notify_each_blocked: true
 
 # Market indices to track

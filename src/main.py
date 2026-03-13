@@ -103,13 +103,13 @@ def load_config() -> dict:
 def load_delivery_retry_config(config: dict) -> dict:
     """Load delivery retry settings with sane defaults."""
     retry_cfg = config.get("delivery_retry", {})
-    initial_backoff = max(int(retry_cfg.get("initial_backoff_seconds", 30)), 0)
-    max_backoff = max(int(retry_cfg.get("max_backoff_seconds", 300)), initial_backoff)
+    initial_backoff = max(int(retry_cfg.get("initial_backoff_seconds", 60)), 0)
+    max_backoff = max(int(retry_cfg.get("max_backoff_seconds", 60)), initial_backoff)
     return {
         "enabled": bool(retry_cfg.get("enabled", True)),
         "max_attempts": max(int(retry_cfg.get("max_attempts", 10)), 1),
         "initial_backoff_seconds": initial_backoff,
-        "backoff_multiplier": max(int(retry_cfg.get("backoff_multiplier", 2)), 1),
+        "backoff_multiplier": max(int(retry_cfg.get("backoff_multiplier", 1)), 1),
         "max_backoff_seconds": max_backoff,
         "notify_each_blocked": bool(retry_cfg.get("notify_each_blocked", True)),
     }
