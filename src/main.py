@@ -30,6 +30,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from src.fetchers.market_data import fetch_all_market_data
 from src.fetchers.telegram_news import fetch_telegram_news
+from src.fetchers.macro_calendar import fetch_macro_calendar
 from src.fetchers.news_ranker import rank_news
 from src.fetchers.pboc import fetch_pboc_data
 from src.generator.report_generator import generate_report
@@ -260,6 +261,13 @@ def save_report(
             },
         },
         "news_ranking": news_data.get("ranking_details", {}),
+        "macro_calendar": {
+            "source_used": news_data.get("macro_calendar", {}).get("source_used", ""),
+            "event_count": len(news_data.get("macro_calendar", {}).get("events", [])),
+            "cache_hit": news_data.get("macro_calendar", {}).get("cache_hit", False),
+            "fallback_reason": news_data.get("macro_calendar", {}).get("fallback_reason", ""),
+            "empty_reason": news_data.get("macro_calendar", {}).get("empty_reason", ""),
+        },
     }
     with open(audit_path, "w", encoding="utf-8") as f:
         json.dump(audit_data, f, ensure_ascii=False, indent=2)
@@ -283,6 +291,32 @@ def prepare_generation_inputs(config: dict) -> tuple[dict | None, dict | None]:
         )
     except Exception as e:
         logger.warning("News ranking failed (%s), proceeding with unranked news", e)
+
+    report_date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        news_data["macro_calendar"] = fetch_macro_calendar(report_date, config)
+    except Exception as e:
+        logger.warning("Macro calendar fetch failed unexpectedly (%s), continuing without it", e)
+        news_data["macro_calendar"] = {
+            "events": [],
+            "grouped": {"domestic": [], "international": {}, "source_used": ""},
+            "source_used": "",
+            "fallback_chain": ["tradingeconomics", "fx678", "investing"],
+            "fallback_reason": f"unexpected_error:{e}",
+            "empty_reason": "unexpected_error",
+            "has_data": False,
+            "cache_hit": False,
+            "date": report_date,
+        }
+
+    macro_calendar = news_data.get("macro_calendar", {})
+    logger.info(
+        "Macro calendar ready: source=%s, events=%d, cache_hit=%s, empty_reason=%s",
+        macro_calendar.get("source_used") or "none",
+        len(macro_calendar.get("events", [])),
+        macro_calendar.get("cache_hit", False),
+        macro_calendar.get("empty_reason", ""),
+    )
 
     logger.info("=" * 60)
     logger.info("STEP 2: Running pre-generation data validation...")

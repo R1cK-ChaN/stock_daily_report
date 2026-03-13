@@ -43,6 +43,15 @@ LOW_VALUE_TERMS = [
 ]
 
 PREDICTIVE_TERMS = ["预计", "预期", "有望", "或将", "展望", "投资建议"]
+FUNDAMENTAL_EXPLANATORY_TERMS = ["显示出", "反映出", "说明", "支撑", "压制", "提振", "打压"]
+OBSERVATION_A_SHARE_TERMS = [
+    "A股", "中国股票", "中国股市", "沪深", "沪深市场", "沪深两市",
+    "中国资产", "中国策略", "港股", "H股", "ADR", "美国存托凭证",
+]
+OBSERVATION_GLOBAL_COMMENTARY_TERMS = [
+    "英国央行", "英格兰银行", "Bank of England", "BOE",
+    "欧洲央行", "ECB", "全球央行", "全球利率", "全球经济", "全球市场",
+]
 
 
 def extract_sections(report_text: str) -> dict[str, str]:
@@ -82,6 +91,19 @@ def inspect_report_style(report_text: str) -> dict[str, list[str]]:
     fundamental = sections.get("二、基本面分析", "")
     if "国内方面：" not in fundamental or "国际方面：" not in fundamental:
         errors.append("基本面分析缺少“国内方面：”或“国际方面：”分组")
+    else:
+        domestic_match = re.search(r"国内方面：([\s\S]*?)国际方面：", fundamental)
+        international_match = re.search(r"国际方面：([\s\S]*)$", fundamental)
+        domestic = domestic_match.group(1).strip() if domestic_match else ""
+        international = international_match.group(1).strip() if international_match else ""
+        if not re.search(r"^\s*i\.\s+", domestic, flags=re.MULTILINE):
+            errors.append("基本面分析的“国内方面：”缺少 i. 分点编号")
+        if not re.search(r"^\s*i\.\s+", international, flags=re.MULTILINE):
+            errors.append("基本面分析的“国际方面：”缺少 i. 分点编号")
+
+    hits = [term for term in FUNDAMENTAL_EXPLANATORY_TERMS if term in fundamental]
+    if hits:
+        warnings.append(f"基本面分析包含解释性词语：{'、'.join(hits[:4])}")
 
     low_value_hits = sum(report_text.count(term) for term in LOW_VALUE_TERMS)
     if low_value_hits > 1:
@@ -96,6 +118,12 @@ def inspect_report_style(report_text: str) -> dict[str, list[str]]:
         for term in PREDICTIVE_TERMS:
             if term in observation:
                 errors.append(f"市场观察摘要包含预测/展望词：{term}")
+        has_a_share_anchor = any(term.lower() in observation.lower() for term in OBSERVATION_A_SHARE_TERMS)
+        has_global_commentary = any(
+            term.lower() in observation.lower() for term in OBSERVATION_GLOBAL_COMMENTARY_TERMS
+        )
+        if has_global_commentary and not has_a_share_anchor:
+            warnings.append("市场观察摘要出现泛全球央行/利率评论，但缺少A股或中国股票锚点")
 
     return {"errors": errors, "warnings": warnings}
 

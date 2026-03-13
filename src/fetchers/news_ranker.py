@@ -97,12 +97,47 @@ INSTITUTION_VIEW_KEYWORDS = [
     "国泰海通", "广发证券", "招商证券", "兴业证券", "天风证券",
 ]
 
+CORE_MACRO_PRIORITY_KEYWORDS = [
+    "中国cpi", "中国ppi", "中国pmi", "中国gdp", "中国零售销售", "中国工业增加值",
+    "中国进出口", "中国贸易", "中国m2", "中国m1", "中国社融", "中国社会融资",
+    "中国货币供应", "中国消费情绪", "中国消费者信心", "ipsos",
+    "美国cpi", "美国ppi", "美国pmi", "美国非农", "美国失业率", "美国零售销售",
+    "美国贸易", "美国贸易帐", "美国出口", "美国进口", "美国房地产", "美国住房",
+    "美国营建许可", "美国新屋开工", "美国初请失业金", "美国续请失业金",
+    "美联储资产负债表", "fed balance sheet", "consumer sentiment", "consumer confidence",
+    "building permits", "housing starts", "initial jobless claims", "continuing jobless claims",
+    "industrial production", "trade balance", "exports", "imports", "retail sales",
+    "social financing", "aggregate financing", "货币供应", "消费者信心",
+    "欧元区cpi", "欧元区ppi", "欧元区pmi", "欧元区gdp", "欧元区零售销售",
+    "欧元区工业产出", "欧元区工业生产", "欧元区贸易", "euro area cpi", "euro area ppi",
+    "euro area pmi", "euro area gdp", "euro area retail sales", "euro area industrial production",
+]
+
 US_MACRO_PRIORITY_KEYWORDS = [
     "美国cpi", "美国ppi", "美国pmi", "美国非农", "美国失业率", "美国零售销售",
     "美国贸易", "美国房地产", "美国住房", "新屋开工", "成屋销售", "耐用品订单",
     "美联储资产负债表", "fed balance sheet", "quantitative tightening", "qt",
     "cpi", "ppi", "nonfarm", "unemployment", "retail sales", "housing starts",
     "existing home sales", "trade balance", "jobless claims",
+]
+
+MAJOR_MACRO_EVENT_KEYWORDS = [
+    "霍尔木兹", "海峡", "国际能源署", "iea", "石油储备", "原油供应",
+    "能源供应", "能源冲击", "油价", "原油", "opec", "地缘政治",
+    "贸易调查", "贸易冲突", "关税", "制裁", "央行政策",
+]
+
+A_SHARE_OBSERVATION_KEYWORDS = [
+    "a股", "中国股票", "中国股市", "沪深", "沪深市场", "沪深两市",
+    "中国资产", "中国策略", "a shares", "a-share", "ashare", "ashares",
+    "china equities", "china equity", "china stocks", "h股", "h shares", "h-share",
+    "adr", "美国存托凭证", "港股", "h股 vs a股", "adr vs a股",
+]
+
+GLOBAL_COMMENTARY_KEYWORDS = [
+    "英国央行", "英格兰银行", "bank of england", "boe",
+    "全球央行", "全球利率", "全球经济", "全球市场",
+    "欧洲央行", "ecb", "加央行", "瑞士央行", "发达市场利率",
 ]
 
 LOW_VALUE_COMPANY_KEYWORDS = [
@@ -135,19 +170,40 @@ def _compute_keyword_score(title: str, content: str) -> float:
             score -= 5
 
     institution_matches = _count_keyword_matches(text, INSTITUTION_VIEW_KEYWORDS)
+    core_macro_matches = _count_keyword_matches(text, CORE_MACRO_PRIORITY_KEYWORDS)
     us_macro_matches = _count_keyword_matches(text, US_MACRO_PRIORITY_KEYWORDS)
+    major_macro_event_matches = _count_keyword_matches(text, MAJOR_MACRO_EVENT_KEYWORDS)
+    a_share_observation_matches = _count_keyword_matches(text, A_SHARE_OBSERVATION_KEYWORDS)
+    global_commentary_matches = _count_keyword_matches(text, GLOBAL_COMMENTARY_KEYWORDS)
     low_value_company_matches = _count_keyword_matches(text, LOW_VALUE_COMPANY_KEYWORDS)
 
     score += institution_matches * 6
+    score += core_macro_matches * 5
     score += us_macro_matches * 4
+    score += major_macro_event_matches * 3
+    score += a_share_observation_matches * 4
     score -= low_value_company_matches * 5
+    if institution_matches > 0 and a_share_observation_matches > 0:
+        score += min(institution_matches, a_share_observation_matches) * 6
+    if (
+        global_commentary_matches > 0
+        and a_share_observation_matches == 0
+        and core_macro_matches == 0
+        and major_macro_event_matches == 0
+    ):
+        score -= global_commentary_matches * 4
 
-    has_macro_signal = tier1_matches > 0 or _count_keyword_matches(text, KEYWORD_TIERS[8]) > 0
+    has_macro_signal = (
+        tier1_matches > 0
+        or _count_keyword_matches(text, KEYWORD_TIERS[8]) > 0
+        or core_macro_matches > 0
+        or major_macro_event_matches > 0
+    )
     if low_value_company_matches and not has_macro_signal and institution_matches == 0:
         score *= 0.6
 
     # Compounding: 2+ tier-1 matches -> x1.5
-    if tier1_matches >= 2:
+    if tier1_matches >= 2 or core_macro_matches >= 2:
         score *= 1.5
 
     return max(score, 0)
@@ -232,12 +288,14 @@ def llm_rank(
     prompt = f"""你是A股市场策略研究员。请从以下金十快讯中选出对A股市场最值得写入日报的{top_n}条，按优先级从高到低排序。
 
 选择标准：
-1. 国内宏观政策、经济数据、中国政策动向 > 美国宏观、美联储、美国就业/房地产/贸易 > 行业政策 > 机构/券商/外资/投行观点 > 个股事件
-2. 若出现机构、券商、外资、投行观点，优先保留至少1条，供“市场观察摘要”使用
-3. 普通公司业绩、股东变更、减持增持、回购、签约、中标等公告只有在宏观素材不足时才补位
-4. 优先选择有实质内容的新闻（政策变化、数据发布、重大事件），不要追求覆盖面
-5. 过滤掉：日程预告、数据中心更新通知、直播推广、外汇期权到期提示
-6. 如果是综合摘要类消息（编号列表），评估其中最重要的单条信息
+1. 中国、美国、欧元区宏观经济数据优先级最高，尤其是CPI/PPI/PMI/GDP、零售销售、工业生产、贸易、房地产、失业金、美联储资产负债表、M2/社融等
+2. 若核心宏观数据不足，可补充重大宏观/市场热点事件，如能源、油价、地缘政治、贸易冲突、央行政策等
+3. “市场观察摘要”所需观点优先保留直接谈A股、中国股票、H股、ADR、中国资产、中国策略的机构/券商/外资/投行观点
+4. 不直接涉及A股或中国股票的泛全球央行评论、英国央行/欧洲央行利率评论优先级更低
+5. 普通公司业绩、股东变更、减持增持、回购、签约、中标等公告只有在宏观素材不足时才补位
+6. 优先选择有实质内容的新闻（政策变化、数据发布、重大事件），不要追求覆盖面
+7. 过滤掉：日程预告、数据中心更新通知、直播推广、外汇期权到期提示
+8. 如果是综合摘要类消息（编号列表），评估其中最重要的单条信息
 
 只返回前{top_n}条，JSON格式：[{{"rank": 1, "id": N, "reason": "10字以内理由"}}, ...]
 

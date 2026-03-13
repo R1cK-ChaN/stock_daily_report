@@ -10,6 +10,7 @@ schedule:
 api_keys:
   openrouter_api_key: ${OPENROUTER_API_KEY}
   anthropic_api_key: ${ANTHROPIC_API_KEY}  # compatibility fallback only
+  tradingeconomics_api_key: ${TRADINGECONOMICS_API_KEY}
   wechat_webhook_url: ${WECHAT_WEBHOOK_URL}
 
 # LLM settings (via OpenRouter)
@@ -81,6 +82,11 @@ news:
     llm_top_n: 6                # Keep only the highest-priority macro/viewpoint items
     llm_ranking_enabled: true
     llm_max_tokens: 800
+
+macro_calendar:
+  request_timeout: 12
+  cache_enabled: true
+  source_order: ["tradingeconomics", "fx678", "investing"]
 
 # Sector performance
 sectors:
