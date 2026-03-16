@@ -90,6 +90,7 @@ The retry controller reuses the original data for same-data retries and refreshe
 │       └── feishu.py               # Feishu custom bot delivery
 ├── config/settings.yaml            # Runtime configuration
 ├── scripts/
+│   ├── run_full_pipeline.sh       # Manual one-click end-to-end runner
 │   ├── run_daily_report.sh         # launchd-safe wrapper with preflight
 │   └── install_launch_agent.sh     # Installs the LaunchAgent
 ├── launchd/com.kingjason.stock-daily-report.plist.template
@@ -142,6 +143,16 @@ Notes:
 source .venv/bin/activate
 python src/main.py
 ```
+
+## One-Click Full Run
+
+For a manual end-to-end run without the scheduler-only Feishu preflight:
+
+```bash
+./scripts/run_full_pipeline.sh
+```
+
+This wrapper loads `.env`, checks `.venv` and `OPENROUTER_API_KEY`, then runs the full pipeline via `src/main.py`.
 
 At runtime the service will:
 
