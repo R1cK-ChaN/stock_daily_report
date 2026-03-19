@@ -116,6 +116,14 @@ def _get_news_display_text(item: dict) -> str:
     return content if len(content) > len(title) else title
 
 
+def _get_news_freshness_label(item: dict) -> str:
+    """Return a short freshness label for ranked news prompts."""
+    bucket = item.get("recency_bucket", "")
+    if not bucket:
+        return ""
+    return f"[{bucket}] "
+
+
 def _iter_ranked_or_raw_news(news_data: dict) -> list[dict]:
     ranked = news_data.get("ranked_news", [])
     return ranked if ranked else news_data.get("market_news", [])
@@ -147,9 +155,10 @@ def _collect_fundamental_news_candidates(news_data: dict) -> dict[str, dict[str,
 
         side, category = group
         side_bucket = grouped[side].setdefault(category, [])
-        if display_text in side_bucket or len(side_bucket) >= 2:
+        tagged_text = f"{_get_news_freshness_label(item)}{display_text}".strip()
+        if tagged_text in side_bucket or len(side_bucket) >= 2:
             continue
-        side_bucket.append(display_text)
+        side_bucket.append(tagged_text)
 
     return grouped
 
@@ -192,7 +201,7 @@ def _format_observation_candidates(news_data: dict) -> str:
             continue
         if not _contains_any(display_text, OBSERVATION_A_SHARE_KEYWORDS):
             continue
-        lines.append(f"- {display_text}")
+        lines.append(f"- {_get_news_freshness_label(item)}{display_text}".rstrip())
         count += 1
         if count >= 3:
             break
@@ -313,6 +322,7 @@ def _format_news_data(news_data: dict) -> str:
     ranked = news_data.get("ranked_news", [])
     if ranked:
         lines.append("【以下为金十快讯全局参考，已按宏观优先、机构观点优先、公司新闻降权的口径预排序】")
+        lines.append("时间标签说明：`[0-24h]` 优先级最高，`[24-48h]` 仅在新鲜素材不足时补位，`[48-72h]` 只作最后兜底。")
         lines.append("写作要求：第二部分优先使用宏观、政策、消费与产业景气、美国/欧元区宏观与美联储线索；第四部分优先提炼直接谈A股/中国股票的机构观点。")
         lines.append("低优先级：普通公司业绩、股东变更、弱相关公告，仅当宏观素材明显不足时才可补一条。")
         for i, item in enumerate(ranked, 1):
@@ -321,13 +331,13 @@ def _format_news_data(news_data: dict) -> str:
             display_text = _get_news_display_text(item)
             lines.append(
                 f"[重要性: {i}{reason_str}]\n"
-                f"  {display_text}"
+                f"  {_get_news_freshness_label(item)}{display_text}".rstrip()
             )
     else:
         # Fallback: use raw market_news if ranking wasn't run
         lines.append("【以下为金十快讯，请直接用中文概述要点】")
         for item in news_data.get("market_news", [])[:10]:
-            lines.append(f"- {_get_news_display_text(item)}")
+            lines.append(f"- {_get_news_freshness_label(item)}{_get_news_display_text(item)}".rstrip())
 
     return "\n".join(lines) if lines else "（新闻数据暂缺）"
 

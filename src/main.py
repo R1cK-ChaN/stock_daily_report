@@ -29,6 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
 from src.fetchers.market_data import fetch_all_market_data
+from src.fetchers.news_freshness import annotate_news_freshness, get_time_decay_config
 from src.fetchers.telegram_news import fetch_telegram_news
 from src.fetchers.macro_calendar import fetch_macro_calendar
 from src.fetchers.news_ranker import rank_news
@@ -46,6 +47,7 @@ from src.delivery import (
 from src.delivery.common import env_bool
 
 logger = logging.getLogger(__name__)
+NEWS_CACHE_FILENAME = "news_cache.json"
 
 
 def allow_needs_review_delivery() -> bool:
@@ -74,6 +76,125 @@ def _today_output_dir() -> Path:
     d = PROJECT_ROOT / "output" / today_str
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _output_dir_for(date_str: str) -> Path:
+    """Return the output directory for a specific report date."""
+    output_dir = PROJECT_ROOT / "output" / date_str
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def _news_cache_path(date_str: str) -> Path:
+    """Return the daily cache path for standardized market news."""
+    return _output_dir_for(date_str) / NEWS_CACHE_FILENAME
+
+
+def _news_cache_identity(item: dict) -> str | None:
+    """Build the deduplication key for a cached news item."""
+    url = str(item.get("url", "")).strip()
+    if url:
+        return f"url::{url}"
+
+    source = str(item.get("source", "")).strip()
+    title = str(item.get("title", "")).strip()
+    publish_time = str(item.get("publish_time", "")).strip()
+    if source or title or publish_time:
+        return f"triple::{source}::{title}::{publish_time}"
+    return None
+
+
+def _serialize_market_news(items: list[dict]) -> list[dict]:
+    """Keep only the standardized fields needed for later reuse."""
+    serialized = []
+    for item in items:
+        serialized.append({
+            "title": item.get("title", ""),
+            "content": item.get("content", ""),
+            "publish_time": item.get("publish_time", ""),
+            "source": item.get("source", ""),
+            "category": item.get("category", ""),
+            "url": item.get("url", ""),
+        })
+    return serialized
+
+
+def _deduplicate_news_items(items: list[dict]) -> list[dict]:
+    """Deduplicate by URL first, then by source + title + publish time."""
+    deduped = []
+    seen: set[str] = set()
+    for item in items:
+        key = _news_cache_identity(item)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _load_recent_cached_news(config: dict, *, now: datetime | None = None) -> tuple[list[dict], dict]:
+    """Load cached market news that still falls within the report window."""
+    now_dt = now or datetime.now()
+    profile = get_time_decay_config(config)
+    cache_files = sorted((PROJECT_ROOT / "output").glob(f"*/{NEWS_CACHE_FILENAME}"), reverse=True)
+
+    loaded_items: list[dict] = []
+    loaded_files: list[str] = []
+    for cache_path in cache_files:
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to read news cache %s (%s)", cache_path, exc)
+            continue
+
+        raw_items = payload.get("market_news", [])
+        if not isinstance(raw_items, list):
+            continue
+
+        eligible_items = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            annotated = annotate_news_freshness(item, config, now=now_dt)
+            if not annotated.get("report_eligible"):
+                continue
+            eligible_items.append(_serialize_market_news([annotated])[0])
+
+        if eligible_items:
+            loaded_files.append(str(cache_path))
+            loaded_items.extend(eligible_items)
+
+    deduped = _deduplicate_news_items(loaded_items)
+    return deduped, {
+        "loaded_files": loaded_files,
+        "loaded_item_count": len(deduped),
+        "max_report_age_hours": profile["max_report_age_hours"],
+    }
+
+
+def _save_news_cache(market_news: list[dict], *, report_date: str | None = None) -> Path | None:
+    """Persist today's standardized market news for later fallback use."""
+    if not market_news:
+        return None
+
+    date_str = report_date or datetime.now().strftime("%Y-%m-%d")
+    cache_path = _news_cache_path(date_str)
+    payload = {
+        "date": date_str,
+        "saved_at": datetime.now().isoformat(),
+        "market_news": _serialize_market_news(market_news),
+    }
+    cache_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return cache_path
+
+
+def _merge_market_news_with_cache(live_items: list[dict], cached_items: list[dict]) -> list[dict]:
+    """Merge live results with cached fallback items, preferring live items."""
+    return _deduplicate_news_items(list(live_items) + list(cached_items))
 
 
 def setup_logging():
@@ -261,6 +382,7 @@ def save_report(
             },
         },
         "news_ranking": news_data.get("ranking_details", {}),
+        "news_cache": news_data.get("cache_details", {}),
         "macro_calendar": {
             "source_used": news_data.get("macro_calendar", {}).get("source_used", ""),
             "event_count": len(news_data.get("macro_calendar", {}).get("events", [])),
@@ -278,6 +400,34 @@ def save_report(
 def prepare_generation_inputs(config: dict) -> tuple[dict | None, dict | None]:
     """Fetch, rank, and validate the source data for one generation cycle."""
     market_data, news_data, pboc_data = fetch_all_data(config)
+    report_date = datetime.now().strftime("%Y-%m-%d")
+
+    cached_items, cache_meta = _load_recent_cached_news(config)
+    live_items = news_data.get("market_news", [])
+    merged_items = _merge_market_news_with_cache(live_items, cached_items)
+    news_data["live_market_news"] = live_items
+    news_data["cached_market_news"] = cached_items
+    news_data["market_news"] = merged_items
+    news_data["cache_details"] = {
+        **cache_meta,
+        "live_item_count": len(live_items),
+        "merged_item_count": len(merged_items),
+        "saved_path": "",
+    }
+
+    try:
+        cache_path = _save_news_cache(live_items, report_date=report_date)
+        if cache_path is not None:
+            news_data["cache_details"]["saved_path"] = str(cache_path)
+    except OSError as exc:
+        logger.warning("Failed to save news cache for %s (%s)", report_date, exc)
+
+    logger.info(
+        "News cache merge: live=%d, cached=%d, merged=%d",
+        len(live_items),
+        len(cached_items),
+        len(merged_items),
+    )
 
     logger.info("=" * 60)
     logger.info("STEP 1.5: Ranking news by market relevance...")
@@ -292,7 +442,6 @@ def prepare_generation_inputs(config: dict) -> tuple[dict | None, dict | None]:
     except Exception as e:
         logger.warning("News ranking failed (%s), proceeding with unranked news", e)
 
-    report_date = datetime.now().strftime("%Y-%m-%d")
     try:
         news_data["macro_calendar"] = fetch_macro_calendar(report_date, config)
     except Exception as e:

@@ -82,6 +82,16 @@ news:
     llm_top_n: 6                # Keep only the highest-priority macro/viewpoint items
     llm_ranking_enabled: true
     llm_max_tokens: 800
+    time_decay:
+      enabled: true
+      buckets:
+        - {label: "0-24h", max_age_hours: 24, multiplier: 1.0, report_eligible: true}
+        - {label: "24-48h", max_age_hours: 48, multiplier: 0.55, report_eligible: true}
+        - {label: "48-72h", max_age_hours: 72, multiplier: 0.25, report_eligible: true}
+      default:
+        label: ">72h"
+        multiplier: 0.0
+        report_eligible: false
 
 macro_calendar:
   request_timeout: 12

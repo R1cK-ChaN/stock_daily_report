@@ -13,9 +13,14 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
 
 import openai
+
+from src.fetchers.news_freshness import (
+    annotate_news_freshness,
+    count_items_by_bucket,
+    get_time_decay_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -209,31 +214,41 @@ def _compute_keyword_score(title: str, content: str) -> float:
     return max(score, 0)
 
 
-def _compute_recency_multiplier(publish_time: str) -> float:
-    """Compute recency multiplier based on publish time."""
-    if not publish_time:
-        return 0.4
-
-    now = datetime.now()
-    today = now.date()
-
-    try:
-        dt = datetime.fromisoformat(publish_time)
-        pub_date = dt.date()
-        delta = (today - pub_date).days
-        if delta <= 0:
-            return 1.0
-        elif delta == 1:
-            return 0.7
-        else:
-            return 0.4
-    except (ValueError, TypeError):
-        pass
-
-    return 0.4
+def _freshness_tag(item: dict) -> str:
+    """Return a short freshness tag for prompts and logs."""
+    bucket = item.get("recency_bucket", "unknown")
+    age_hours = item.get("age_hours")
+    if age_hours is None:
+        return f"[{bucket}]"
+    return f"[{bucket} | {age_hours:.2f}h]"
 
 
-def keyword_rank(news_items: list[dict], top_n: int = 15) -> list[dict]:
+def _select_report_items_by_bucket_priority(
+    items: list[dict],
+    *,
+    top_n: int,
+    config: dict,
+) -> list[dict]:
+    """Select final report items by recency bucket priority, preserving intra-bucket order."""
+    if top_n <= 0:
+        return []
+
+    profile = get_time_decay_config(config)
+    selected = []
+    for bucket_label in profile["priority_labels"]:
+        bucket_items = [
+            item for item in items
+            if item.get("report_eligible") and item.get("recency_bucket") == bucket_label
+        ]
+        remaining_slots = top_n - len(selected)
+        if remaining_slots <= 0:
+            break
+        selected.extend(bucket_items[:remaining_slots])
+
+    return selected[:top_n]
+
+
+def keyword_rank(news_items: list[dict], top_n: int = 15, config: dict | None = None) -> list[dict]:
     """
     Stage A: Rank news items by keyword score.
 
@@ -242,18 +257,33 @@ def keyword_rank(news_items: list[dict], top_n: int = 15) -> list[dict]:
         top_n: Number of top items to return.
 
     Returns:
-        Top N news items sorted by score, each with 'keyword_score' added.
+        Top N news items sorted by score, each with freshness metadata.
     """
     scored = []
     for item in news_items:
-        base_score = _compute_keyword_score(item.get("title", ""), item.get("content", ""))
-        recency_mult = _compute_recency_multiplier(item.get("publish_time", ""))
+        annotated = item
+        if "recency_bucket" not in annotated or "recency_multiplier" not in annotated:
+            annotated = annotate_news_freshness(item, config)
+        if not annotated.get("report_eligible"):
+            continue
 
+        base_score = _compute_keyword_score(item.get("title", ""), item.get("content", ""))
+        recency_mult = float(annotated.get("recency_multiplier", 0.0))
         final_score = base_score * recency_mult
-        scored_item = {**item, "keyword_score": round(final_score, 2)}
+        scored_item = {
+            **annotated,
+            "base_keyword_score": round(base_score, 2),
+            "keyword_score": round(final_score, 2),
+        }
         scored.append(scored_item)
 
-    scored.sort(key=lambda x: x["keyword_score"], reverse=True)
+    scored.sort(
+        key=lambda item: (
+            -item["keyword_score"],
+            item.get("age_hours", float("inf")),
+            item.get("title", ""),
+        )
+    )
     return scored[:top_n]
 
 
@@ -281,7 +311,7 @@ def llm_rank(
         content = item.get("content", "")
         # Use the longer of title/content to ensure full info is visible
         text = content if len(content) > len(title) else title
-        item_lines.append(f"{i}. {text}")
+        item_lines.append(f"{i}. {_freshness_tag(item)} {text}")
 
     items_text = "\n".join(item_lines)
 
@@ -296,6 +326,8 @@ def llm_rank(
 6. 优先选择有实质内容的新闻（政策变化、数据发布、重大事件），不要追求覆盖面
 7. 过滤掉：日程预告、数据中心更新通知、直播推广、外汇期权到期提示
 8. 如果是综合摘要类消息（编号列表），评估其中最重要的单条信息
+9. 时间权重必须严格执行：`[0-24h]` 优先级最高；`[24-48h]` 只有在 0-24h 素材不足时才补位；`[48-72h]` 仅作最后兜底；没有有效发布时间或超过72小时的新闻不得入选
+10. 输出顺序必须与最终建议优先级一致，让更新鲜的同类素材排在更前面
 
 只返回前{top_n}条，JSON格式：[{{"rank": 1, "id": N, "reason": "10字以内理由"}}, ...]
 
@@ -329,15 +361,22 @@ def llm_rank(
 
         # Map LLM rankings back to items
         ranked_result = []
+        selected_indices: set[int] = set()
         for entry in rankings[:top_n]:
             idx = entry.get("id", 0) - 1  # 1-indexed to 0-indexed
             if 0 <= idx < len(top_items):
+                selected_indices.add(idx)
                 item = {
                     **top_items[idx],
                     "llm_rank": entry.get("rank", 0),
                     "llm_reason": entry.get("reason", ""),
                 }
                 ranked_result.append(item)
+
+        for idx, item in enumerate(top_items):
+            if idx in selected_indices:
+                continue
+            ranked_result.append(item)
 
         if ranked_result:
             logger.info("LLM ranking selected %d items", len(ranked_result))
@@ -368,40 +407,90 @@ def rank_news(news_data: dict, config: dict) -> dict:
     llm_top_n = ranking_cfg.get("llm_top_n", 5)
     llm_enabled = ranking_cfg.get("llm_ranking_enabled", True)
 
-    all_news = news_data.get("market_news", [])
+    all_news = [
+        annotate_news_freshness(item, config)
+        for item in news_data.get("market_news", [])
+    ]
+    news_data["market_news"] = all_news
 
     if not all_news:
         logger.warning("No news items to rank")
         news_data["ranked_news"] = []
-        news_data["ranking_details"] = {"total_input": 0, "method": "none"}
+        news_data["ranking_details"] = {
+            "total_input": 0,
+            "eligible_input": 0,
+            "method": "none",
+            "freshness": {"input_bucket_counts": {}},
+        }
+        return news_data
+
+    eligible_input = [item for item in all_news if item.get("report_eligible")]
+    if not eligible_input:
+        logger.warning("No report-eligible news items after time filtering")
+        news_data["ranked_news"] = []
+        news_data["ranking_details"] = {
+            "total_input": len(all_news),
+            "eligible_input": 0,
+            "method": "time_filtered_none",
+            "freshness": {
+                "input_bucket_counts": count_items_by_bucket(all_news),
+                "eligible_bucket_counts": {},
+                "final_bucket_counts": {},
+            },
+        }
         return news_data
 
     # Stage A: Keyword scoring
-    logger.info("Stage A: Keyword scoring %d items -> top %d", len(all_news), keyword_top_n)
-    keyword_top = keyword_rank(all_news, top_n=keyword_top_n)
+    logger.info("Stage A: Keyword scoring %d eligible items -> top %d", len(eligible_input), keyword_top_n)
+    keyword_top = keyword_rank(all_news, top_n=keyword_top_n, config=config)
 
     for item in keyword_top[:5]:
-        logger.info("  [%.1f] %s", item["keyword_score"], item["title"][:60])
+        logger.info(
+            "  [%.2f]%s %s",
+            item["keyword_score"],
+            _freshness_tag(item),
+            item["title"][:60],
+        )
 
     # Stage B: LLM re-ranking (optional)
     if llm_enabled and keyword_top:
-        logger.info("Stage B: LLM re-ranking top %d -> top %d", len(keyword_top), llm_top_n)
-        ranked = llm_rank(keyword_top, config, top_n=llm_top_n)
+        logger.info("Stage B: LLM re-ranking top %d candidates", len(keyword_top))
+        ordered_candidates = llm_rank(keyword_top, config, top_n=len(keyword_top))
         method = "keyword+llm"
     else:
-        ranked = keyword_top[:llm_top_n]
+        ordered_candidates = keyword_top
         method = "keyword_only"
+
+    ranked = _select_report_items_by_bucket_priority(
+        ordered_candidates,
+        top_n=llm_top_n,
+        config=config,
+    )
 
     news_data["ranked_news"] = ranked
     news_data["ranking_details"] = {
         "total_input": len(all_news),
+        "eligible_input": len(eligible_input),
         "keyword_top_n": len(keyword_top),
         "final_count": len(ranked),
         "method": method,
         "keyword_scores": [
-            {"title": item["title"][:50], "score": item["keyword_score"]}
+            {
+                "title": item["title"][:50],
+                "score": item["keyword_score"],
+                "base_score": item.get("base_keyword_score", 0),
+                "bucket": item.get("recency_bucket", "unknown"),
+                "age_hours": item.get("age_hours"),
+            }
             for item in keyword_top
         ],
+        "freshness": {
+            "input_bucket_counts": count_items_by_bucket(all_news),
+            "eligible_bucket_counts": count_items_by_bucket(eligible_input),
+            "keyword_bucket_counts": count_items_by_bucket(keyword_top),
+            "llm_candidate_bucket_counts": count_items_by_bucket(ordered_candidates),
+            "final_bucket_counts": count_items_by_bucket(ranked),
+        },
     }
 
     logger.info(

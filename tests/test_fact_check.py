@@ -123,14 +123,17 @@ class FactCheckRegressionTests(unittest.TestCase):
                     {
                         "title": "据外媒报道，国际能源署讨论释放石油储备",
                         "content": "",
+                        "recency_bucket": "24-48h",
                     },
                     {
                         "title": "瑞银：更偏好A股而非H股和ADR，交易量高企将支撑中国股票表现",
                         "content": "",
+                        "recency_bucket": "0-24h",
                     },
                     {
                         "title": "某公司控股股东变更并发布业绩预告",
                         "content": "",
+                        "recency_bucket": "0-24h",
                     },
                 ],
                 "market_news": [],
@@ -141,7 +144,9 @@ class FactCheckRegressionTests(unittest.TestCase):
 
         self.assertIn("【第二部分候选新闻补充】", prompt)
         self.assertIn("国际能源方面", prompt)
+        self.assertIn("[24-48h] 据外媒报道，国际能源署讨论释放石油储备", prompt)
         self.assertIn("【第四部分候选观点补充】", prompt)
+        self.assertIn("[0-24h] 瑞银：更偏好A股而非H股和ADR", prompt)
         self.assertIn("更偏好A股而非H股和ADR", prompt)
         section_specific_prompt = prompt.split("【第四部分候选观点补充】", 1)[0]
         self.assertNotIn("控股股东变更并发布业绩预告", section_specific_prompt.split("【第二部分候选新闻补充】", 1)[1])
