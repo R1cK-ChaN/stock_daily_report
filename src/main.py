@@ -57,6 +57,13 @@ def allow_needs_review_delivery() -> bool:
 
 def build_test_delivery_text(report_text: str, review_flags: list[str], reason: str | None) -> str:
     """Prepend a clear warning banner when forcing delivery of a flagged report."""
+    lines = build_test_delivery_audit_lines(review_flags, reason)
+    lines.extend(["", report_text])
+    return "\n".join(lines)
+
+
+def build_test_delivery_audit_lines(review_flags: list[str], reason: str | None) -> list[str]:
+    """Build the warning banner lines for forced NEEDS REVIEW delivery."""
     lines = [
         "[TEST DELIVERY][NEEDS REVIEW]",
         "This report failed fact-check but was delivered because ALLOW_NEEDS_REVIEW_DELIVERY=true.",
@@ -66,8 +73,12 @@ def build_test_delivery_text(report_text: str, review_flags: list[str], reason: 
     if review_flags:
         lines.append("Review flags:")
         lines.extend(f"- {flag}" for flag in review_flags)
-    lines.extend(["", report_text])
-    return "\n".join(lines)
+    return lines
+
+
+def build_test_delivery_audit_text(review_flags: list[str], reason: str | None) -> str:
+    """Build the Feishu audit-only message for forced NEEDS REVIEW delivery."""
+    return "\n".join(build_test_delivery_audit_lines(review_flags, reason))
 
 
 def _today_output_dir() -> Path:
@@ -736,6 +747,11 @@ def run_pipeline():
                 report_path=report_path,
                 fact_check=post_checks,
                 generated_at=generation_result.get("generated_at"),
+                feishu_audit_text=build_test_delivery_audit_text(
+                    post_checks.get("review_flags", []),
+                    delivery_blocked_reason,
+                ),
+                feishu_body_text=report_text,
             )
 
             elapsed = (datetime.now() - start_time).total_seconds()

@@ -18,6 +18,7 @@ EVENT_REPORT_SUCCESS = "report_success"
 EVENT_DELIVERY_BLOCKED = "delivery_blocked"
 EVENT_PIPELINE_FAILURE = "pipeline_failure"
 EVENT_PIPELINE_EXCEPTION = "pipeline_exception"
+FEISHU_PROVIDER = "feishu"
 
 
 def _format_path(report_path: str | Path | None) -> str:
@@ -32,8 +33,7 @@ def _format_review_flags(review_flags: list[str] | None) -> str:
     return "\n".join(f"- {flag}" for flag in review_flags)
 
 
-def _build_report_success_message(
-    report_text: str,
+def _build_report_audit_message(
     *,
     report_path: str | Path | None,
     fact_check: dict | None,
@@ -52,9 +52,52 @@ def _build_report_success_message(
         lines.append("Review flags:")
         lines.extend(f"- {flag}" for flag in review_flags)
 
-    lines.append("")
-    lines.append(report_text)
     return "\n".join(lines)
+
+
+def _aggregate_provider_results(provider: str, event: str, results: list[dict]) -> dict:
+    attempted_results = [result for result in results if not result.get("skipped")]
+    success = all(result.get("success") for result in attempted_results) if attempted_results else True
+    skipped = all(result.get("skipped") for result in results) if results else False
+    failed_result = next(
+        (
+            result for result in results
+            if not result.get("success") and not result.get("skipped")
+        ),
+        None,
+    )
+    skipped_result = next((result for result in results if result.get("skipped")), None)
+
+    return {
+        "provider": provider,
+        "success": success,
+        "skipped": skipped,
+        "event": event,
+        "response": [result.get("response") for result in results],
+        "error": failed_result.get("error") if failed_result else None,
+        "reason": skipped_result.get("reason") if skipped_result and skipped else None,
+        "status_code": failed_result.get("status_code") if failed_result else None,
+        "attempts": sum(result.get("attempts", 0) for result in results),
+        "audit_delivery": results[0] if results else None,
+        "body_delivery": results[1] if len(results) > 1 else None,
+    }
+
+
+def _deliver_feishu_report(
+    *,
+    audit_text: str,
+    body_text: str,
+) -> dict:
+    audit_result = notify_feishu_event(EVENT_REPORT_SUCCESS, audit_text)
+    if audit_result.get("skipped") or not audit_result.get("success"):
+        return _aggregate_provider_results(FEISHU_PROVIDER, EVENT_REPORT_SUCCESS, [audit_result])
+
+    body_result = notify_feishu_event(EVENT_REPORT_SUCCESS, body_text)
+    return _aggregate_provider_results(
+        FEISHU_PROVIDER,
+        EVENT_REPORT_SUCCESS,
+        [audit_result, body_result],
+    )
 
 
 def _build_delivery_blocked_message(
@@ -159,19 +202,20 @@ def deliver_report(
     report_path: str | Path | None = None,
     fact_check: dict | None = None,
     generated_at: str | None = None,
+    feishu_audit_text: str | None = None,
+    feishu_body_text: str | None = None,
 ) -> dict:
     """
     Deliver the successful report to all success-path providers.
     """
     wechat_result = deliver_wechat_report(report_text, config)
-    feishu_result = notify_feishu_event(
-        EVENT_REPORT_SUCCESS,
-        _build_report_success_message(
-            report_text,
+    feishu_result = _deliver_feishu_report(
+        audit_text=feishu_audit_text or _build_report_audit_message(
             report_path=report_path,
             fact_check=fact_check,
             generated_at=generated_at,
         ),
+        body_text=feishu_body_text or report_text,
     )
     return _aggregate_results(EVENT_REPORT_SUCCESS, [wechat_result, feishu_result])
 
@@ -187,6 +231,8 @@ def notify_event(event: str, *, config: dict | None = None, **context: Any) -> d
             report_path=context.get("report_path"),
             fact_check=context.get("fact_check"),
             generated_at=context.get("generated_at"),
+            feishu_audit_text=context.get("feishu_audit_text"),
+            feishu_body_text=context.get("feishu_body_text"),
         )
 
     if event == EVENT_DELIVERY_BLOCKED:

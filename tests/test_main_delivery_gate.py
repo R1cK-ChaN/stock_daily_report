@@ -213,6 +213,18 @@ class MainDeliveryGateTests(unittest.TestCase):
         delivered_text = mock_deliver.call_args.args[0]
         self.assertIn("[TEST DELIVERY][NEEDS REVIEW]", delivered_text)
         self.assertIn("ALLOW_NEEDS_REVIEW_DELIVERY=true", delivered_text)
+        self.assertIn("示例报告正文 13", delivered_text)
+        self.assertEqual(
+            mock_deliver.call_args.kwargs["feishu_audit_text"],
+            "\n".join([
+                "[TEST DELIVERY][NEEDS REVIEW]",
+                "This report failed fact-check but was delivered because ALLOW_NEEDS_REVIEW_DELIVERY=true.",
+                "Reason: Fact-check failed after 1 attempts",
+                "Review flags:",
+                "- [NEEDS REVIEW] example issue",
+            ]),
+        )
+        self.assertEqual(mock_deliver.call_args.kwargs["feishu_body_text"], "一、A股收评（市场表现）\n\n示例报告正文 13")
 
 
 if __name__ == "__main__":

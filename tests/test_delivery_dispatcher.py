@@ -14,6 +14,71 @@ from src.delivery.dispatcher import (
 class DeliveryDispatcherTests(unittest.TestCase):
     @patch("src.delivery.dispatcher.notify_feishu_event")
     @patch("src.delivery.dispatcher.deliver_wechat_report")
+    def test_deliver_report_sends_feishu_audit_then_body(
+        self,
+        mock_wechat,
+        mock_feishu,
+    ):
+        mock_wechat.return_value = {
+            "provider": "wechat",
+            "success": True,
+            "skipped": False,
+            "event": "report_success",
+            "response": {"errcode": 0},
+            "error": None,
+            "reason": None,
+            "status_code": 200,
+            "attempts": 1,
+        }
+        mock_feishu.side_effect = [
+            {
+                "provider": "feishu",
+                "success": True,
+                "skipped": False,
+                "event": "report_success",
+                "response": {"code": 0},
+                "error": None,
+                "reason": None,
+                "status_code": 200,
+                "attempts": 1,
+            },
+            {
+                "provider": "feishu",
+                "success": True,
+                "skipped": False,
+                "event": "report_success",
+                "response": {"code": 0},
+                "error": None,
+                "reason": None,
+                "status_code": 200,
+                "attempts": 1,
+            },
+        ]
+
+        result = deliver_report(
+            "report body",
+            {"wechat": {"enabled": True, "msg_type": "markdown"}},
+            report_path=Path("output/2026-03-10/report.md"),
+            fact_check={"passed": True, "review_flags": []},
+            generated_at="2026-03-10T15:35:00",
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["attempted_count"], 2)
+        self.assertEqual(mock_wechat.call_count, 1)
+        self.assertEqual(mock_feishu.call_count, 2)
+        self.assertEqual(mock_wechat.call_args.args[0], "report body")
+        audit_message = mock_feishu.call_args_list[0].args[1]
+        body_message = mock_feishu.call_args_list[1].args[1]
+        self.assertIn("[Daily Report]", audit_message)
+        self.assertIn("Path: output/2026-03-10/report.md", audit_message)
+        self.assertNotIn("report body", audit_message)
+        self.assertEqual(body_message, "report body")
+        self.assertEqual(result["providers"]["feishu"]["body_delivery"]["response"], {"code": 0})
+        self.assertEqual(summarize_delivery_result(result), "wechat=OK, feishu=OK")
+
+    @patch("src.delivery.dispatcher.notify_feishu_event")
+    @patch("src.delivery.dispatcher.deliver_wechat_report")
     def test_deliver_report_preserves_wechat_and_skips_feishu_when_disabled(
         self,
         mock_wechat,
