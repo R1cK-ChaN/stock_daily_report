@@ -1,3 +1,5 @@
+./scripts/run_full_pipeline.sh
+
 # Stock Daily Report
 
 English-first project homepage for a daily China A-shares post-close report generator.
