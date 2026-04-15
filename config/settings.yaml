@@ -1,13 +1,16 @@
 # Daily China A-Shares Market Report — Configuration
 
-# Schedule
+# Schedule metadata for operators only.
+# The runtime does not read this block; the actual weekday 15:01 trigger is installed via macOS launchd.
 schedule:
   timezone: "Asia/Shanghai"
-  run_time: "15:30"  # After market close at 15:00 CST
+  run_time: "15:01"  # After market close at 15:00 CST on trading weekdays
 
 # API Keys (set via environment variables for security)
 api_keys:
-  anthropic_api_key: ${ANTHROPIC_API_KEY}
+  openrouter_api_key: ${OPENROUTER_API_KEY}
+  anthropic_api_key: ${ANTHROPIC_API_KEY}  # compatibility fallback only
+  tradingeconomics_api_key: ${TRADINGECONOMICS_API_KEY}
   wechat_webhook_url: ${WECHAT_WEBHOOK_URL}
 
 # LLM settings (via OpenRouter)
@@ -16,6 +19,14 @@ llm:
   model: "google/gemini-3-flash-preview"
   max_tokens: 4096
   temperature: 0.3  # Low temperature for factual reporting
+
+delivery_retry:
+  enabled: true
+  max_attempts: 10
+  initial_backoff_seconds: 60
+  backoff_multiplier: 1
+  max_backoff_seconds: 60
+  notify_each_blocked: true
 
 # Market indices to track
 # code format: "1.XXXXXX" for Shanghai, "0.XXXXXX" for Shenzhen
@@ -68,9 +79,24 @@ news:
 
   ranking:
     keyword_top_n: 15           # Wider first pass for high-volume Chinese feed
-    llm_top_n: 8                # More items reach writer to reduce hallucination
+    llm_top_n: 6                # Keep only the highest-priority macro/viewpoint items
     llm_ranking_enabled: true
     llm_max_tokens: 800
+    time_decay:
+      enabled: true
+      buckets:
+        - {label: "0-24h", max_age_hours: 24, multiplier: 1.0, report_eligible: true}
+        - {label: "24-48h", max_age_hours: 48, multiplier: 0.55, report_eligible: true}
+        - {label: "48-72h", max_age_hours: 72, multiplier: 0.25, report_eligible: true}
+      default:
+        label: ">72h"
+        multiplier: 0.0
+        report_eligible: false
+
+macro_calendar:
+  request_timeout: 12
+  cache_enabled: true
+  source_order: ["tradingeconomics", "fx678", "investing"]
 
 # Sector performance
 sectors:

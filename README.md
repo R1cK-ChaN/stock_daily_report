@@ -1,180 +1,291 @@
-# Stock Daily Report — A股每日市场报告
+./scripts/run_full_pipeline.sh
 
-Automated pipeline that generates a daily China A-shares market report after market close (15:00 CST). Every data point is fetched from deterministic sources (AKShare) before being passed to an LLM, with a 3-layer fact-checking system to prevent hallucination.
+# Stock Daily Report
 
-## Report Sections
+English-first project homepage for a daily China A-shares post-close report generator.
 
-1. **A股收评** — Index prices, sector performance, market breadth
-2. **基本面分析** — Key financial news & economic data
-3. **央行公开市场操作** — PBOC repo rates, SHIBOR, LPR & monetary policy signals
-4. **总结与展望** — Synthesis and short-term outlook
+The service runs on trading days, combines structured market data with Jin10 Telegram news, macro calendar events, and PBOC open market data, then generates a four-section research-style report through an OpenRouter-compatible model. Delivery is gated by fact-checking and can push to WeChat and Feishu when enabled.
 
-## Architecture
+## What It Does
 
+- Generates a post-close China A-shares daily report after the market shuts.
+- Uses structured inputs instead of free-form news prompting: market data, ranked Jin10 items, macro calendar events, and PBOC liquidity data.
+- Ranks high-volume Telegram news before generation so the prompt stays focused on macro, policy, liquidity, and market-relevant items.
+- Runs pre-generation validation and post-generation fact checks before delivery.
+- Saves a report, audit trail, logs, and retry artifacts under `output/YYYY-MM-DD/`.
+- Optionally delivers success messages to WeChat and Feishu, plus Feishu alerts for blocked delivery, pipeline failures, and uncaught exceptions.
+
+## Report Shape
+
+The generated report is fixed to four sections:
+
+1. `一、市场表现` / Market Performance
+2. `二、基本面分析` / Fundamental Analysis
+3. `三、央行动态` / PBOC Dynamics
+4. `四、市场观察摘要` / Market Observation Summary
+
+Recent runs in `output/` show the current tone and structure: research-style Chinese prose with a strong bias toward macro, liquidity, and market-impacting events rather than news recap.
+
+## Pipeline Overview
+
+```text
+Trigger: manual run or optional macOS launchd on weekdays at 15:01 Asia/Shanghai
+    |
+    v
+Trading day gate (Sina calendar, weekday fallback)
+    |
+    v
+Parallel fetch
+- Market data (Sina / EastMoney / bounded fallbacks)
+- Telegram Jin10 news (`https://t.me/s/jin10data`)
+- PBOC OMO / repo / SHIBOR / LPR
+    |
+    v
+News ranking
+- Stage A: deterministic keyword scoring
+- Stage B: LLM re-ranking on the top subset
+    |
+    v
+Macro calendar enrichment
+- TradingEconomics -> FX678 -> Investing fallback chain
+    |
+    v
+Pre-generation validation
+    |
+    v
+LLM report generation
+    |
+    v
+Post-generation fact checks
+    |
+    +--> PASS
+    |    Save `report.md` + `audit.json`
+    |    Deliver to enabled providers
+    |
+    +--> NEEDS REVIEW
+         Save attempt artifacts
+         Send Feishu blocked alert if configured
+         Retry with controller
+         Optional forced test delivery via `ALLOW_NEEDS_REVIEW_DELIVERY=true`
 ```
-TRIGGER: cron at 15:30 CST (or manual run)
-    │
-    ├── Trading day? (Sina calendar) ── No ──► Skip
-    │
-    ▼ Yes
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│  Market   │  │   News   │  │   PBOC   │   ← Parallel fetch
-│  (Sina)   │  │(EM/CLS/富途)│  │ (AKShare)│
-└────┬─────┘  └────┬─────┘  └────┬─────┘
-     └──────────┬──┴─────────────┘
-                ▼
-       News Ranking (2-stage)
-       - Stage A: keyword scoring (5-tier dictionary)
-       - Stage B: LLM pre-ranking (titles only → top 5)
-                │
-                ▼
-       Data Validation (pre-LLM)
-       - Freshness / completeness / range checks
-                │
-                ▼
-       LLM Report Generation (OpenRouter)
-       - Structured prompt with ranked news + all data
-                │
-                ▼
-       Fact-Check (post-LLM)
-       - Number cross-check (regex vs source)
-       - LLM claim verification (second call)
-                │
-                ▼
-       Save → output/YYYY-MM-DD/report.md
-       Deliver → WeChat (optional)
-```
 
-## Project Structure
+The retry controller reuses the original data for same-data retries and refreshes source data on the final retry attempt.
 
-```
+## Repository Layout
+
+```text
 ├── src/
-│   ├── main.py                     # Pipeline orchestrator
+│   ├── main.py                     # Pipeline orchestration and retry gate
 │   ├── fetchers/
-│   │   ├── market_data.py          # Index quotes (Sina primary, EM fallback),
-│   │   │                           #   sectors, breadth, top movers
-│   │   ├── news.py                 # Multi-source news: 东方财富, 财联社, 富途, CCTV
-│   │   ├── news_ranker.py          # 2-stage ranking: keyword scoring + LLM re-rank
-│   │   └── pboc.py                 # Repo rates (FR001/007/014), SHIBOR, LPR
+│   │   ├── market_data.py          # Indices, sectors, breadth, top movers
+│   │   ├── telegram_news.py        # Telegram public preview scraping for Jin10
+│   │   ├── macro_calendar.py       # Macro calendar fallback chain + cache
+│   │   ├── news_ranker.py          # Keyword ranking + LLM re-ranking
+│   │   └── pboc.py                 # OMO announcement, repo, SHIBOR, LPR
 │   ├── generator/
-│   │   └── report_generator.py     # Prompt assembly + OpenRouter API call
+│   │   └── report_generator.py     # Prompt assembly + OpenRouter call
 │   ├── checker/
-│   │   └── fact_check.py           # 3-layer verification
+│   │   └── fact_check.py           # Pre/post generation validation
 │   └── delivery/
-│       └── wechat.py               # WeChat group webhook push
-├── config/
-│   └── settings.yaml               # Model, indices, thresholds, toggles
-├── template/
-│   └── daily_market_report.md      # Report structure reference
-├── docs/
-│   └── PROJECT_STATUS.md           # Development status & known issues
-├── output/                         # Generated reports by date
-│   └── YYYY-MM-DD/
-│       ├── report.md               # The generated report
-│       ├── audit.json              # Fact-check results + news ranking details
-│       └── pipeline_*.log          # Run logs
-├── .env                            # API keys (git-ignored)
-├── .env.example                    # Template for .env
-└── requirements.txt
+│       ├── dispatcher.py           # Success delivery + alert routing
+│       ├── wechat.py               # WeChat webhook delivery
+│       └── feishu.py               # Feishu custom bot delivery
+├── config/settings.yaml            # Runtime configuration
+├── scripts/
+│   ├── run_full_pipeline.sh       # Manual one-click end-to-end runner
+│   ├── run_daily_report.sh         # launchd-safe wrapper with preflight
+│   └── install_launch_agent.sh     # Installs the LaunchAgent
+├── launchd/com.kingjason.stock-daily-report.plist.template
+├── template/daily_market_report.md # Reference output structure
+├── output/YYYY-MM-DD/
+│   ├── report.md                   # Final report for the day
+│   ├── audit.json                  # Fact-check + ranking summary
+│   ├── macro_calendar_cache.json   # Macro calendar cache for that date
+│   ├── pipeline_*.log              # Run logs
+│   └── attempts/...                # Retry attempt reports and audits
+├── .env.example
+└── tests/
 ```
 
 ## Setup
 
 ```bash
-# Create virtual environment and install dependencies
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Configure API key
 cp .env.example .env
-# Edit .env and set your OpenRouter API key
 ```
 
-The `.env` file:
-```
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-WECHAT_WEBHOOK_URL=              # optional
+Required and commonly used environment variables:
+
+```dotenv
+OPENROUTER_API_KEY=             # required
+TRADINGECONOMICS_API_KEY=       # recommended for primary macro calendar source
+
+WECHAT_WEBHOOK_URL=             # optional, used when wechat.enabled=true
+
+FEISHU_ENABLED=false            # optional master switch
+FEISHU_WEBHOOK_URL=             # optional Feishu custom bot webhook
+FEISHU_SECRET=                  # optional signature secret
+FEISHU_TIMEOUT_SECONDS=10
+FEISHU_RETRY_COUNT=2
+
+ALLOW_NEEDS_REVIEW_DELIVERY=false  # keep false by default
 ```
 
-For WeChat delivery, also set `wechat.enabled: true` in `config/settings.yaml`.
+Notes:
 
-## Usage
+- `.env.example` also keeps `ANTHROPIC_API_KEY` as a backward-compatibility fallback, but OpenRouter is the intended runtime path.
+- Feishu delivery is controlled by environment variables, not by a YAML toggle.
+
+## Run Locally
 
 ```bash
 source .venv/bin/activate
 python src/main.py
 ```
 
-The pipeline will:
-1. Check the Sina trading calendar — skip if not a trading day (weekends + Chinese holidays)
-2. Fetch market data, news, and PBOC data in parallel
-3. **Rank news** — keyword scoring (87 headlines → top 10) then LLM re-ranking (top 10 → top 5 with reasons)
-4. Validate data freshness, completeness, and value ranges
-5. Generate report via Gemini 3 Flash on OpenRouter (prompt includes only pre-ranked headlines)
-6. Fact-check: cross-verify numbers + LLM claim verification
-7. Save to `output/YYYY-MM-DD/report.md` and optionally push to WeChat
+## One-Click Full Run
 
-## Scheduling (Cron)
+For a manual end-to-end run without the scheduler-only Feishu preflight:
 
-```
-30 15 * * * cd /path/to/stock_daily_report && .venv/bin/python src/main.py
+```bash
+./scripts/run_full_pipeline.sh
 ```
 
-The trading day check is built-in — safe to run daily including weekends.
+This wrapper loads `.env`, checks `.venv` and `OPENROUTER_API_KEY`, then runs the full pipeline via `src/main.py`.
 
-## Data Sources
+At runtime the service will:
 
-| Data | Source | AKShare Function | Reliability |
-|---|---|---|---|
-| Index quotes | Sina 财经 | `stock_zh_index_spot_sina()` | High |
-| Sector performance | 东方财富 | `stock_board_industry_name_em()` | Medium (rate-limited) |
-| Market breadth | 东方财富 | `stock_zh_a_spot_em()` | Medium (rate-limited) |
-| Trading calendar | Sina | `tool_trade_date_hist_sina()` | High |
-| Repo rates | 全国银行间同业拆借中心 | `repo_rate_query()` | High |
-| SHIBOR | 同上 | `macro_china_shibor_all()` | High |
-| LPR | 同上 | `macro_china_lpr()` | High |
-| Financial news (primary) | 东方财富 | `stock_info_global_em()` | High |
-| Financial news (secondary) | 财联社 | `stock_info_global_cls()` | High |
-| Financial news (tertiary) | 富途 | `stock_info_global_futu()` | High |
-| CCTV news | 央视 | `news_cctv()` | Medium (empty on weekends) |
-| CPI / PMI / GDP | 国家统计局 | `macro_china_cpi_yearly()` etc. | High |
+1. Check whether the current date is an A-share trading day.
+2. Fetch market data, Telegram news, and PBOC data in parallel.
+3. Rank Jin10 items for market relevance.
+4. Enrich the prompt with the macro calendar fallback chain.
+5. Run pre-generation validation.
+6. Generate the report through the configured OpenRouter-compatible model.
+7. Run post-generation fact checks.
+8. Save outputs under `output/YYYY-MM-DD/`.
+9. Deliver or block delivery based on the fact-check result.
 
-## News Ranking
+## Generated Outputs
 
-A two-stage hybrid ranking system sits between data fetch and report generation:
+The runtime entrypoint is `python src/main.py`.
 
-**Stage A — Keyword Scoring (deterministic)**
-- 5-tier keyword dictionary: monetary policy (10) → economic data (8) → market structure (6) → hot sectors (4) → bellwether companies (3)
-- Noise penalty (-5) for irrelevant topics (entertainment, sports, etc.)
-- Multipliers: source credibility (央视 1.4×, 财联社 1.2×) × recency (today 1.0, yesterday 0.7, older 0.4)
-- 2+ tier-1 keyword matches trigger a 1.5× compounding bonus
+Each run writes into `output/YYYY-MM-DD/`:
 
-**Stage B — LLM Pre-Ranking (~700 tokens)**
-- Sends only titles (no content) to Gemini Flash for cost efficiency
-- Prompt: rank by A-share impact (宏观政策 > 经济数据 > 行业政策 > 个股事件)
-- Returns top 5 with 10-character reasons
-- Falls back to keyword-only ranking on LLM failure
+- `output/YYYY-MM-DD/report.md`: final report for the date, with metadata headers showing generation time and fact-check status.
+- `output/YYYY-MM-DD/audit.json`: audit trail with fact-check summary, ranking details, and macro calendar metadata.
+- `output/YYYY-MM-DD/pipeline_*.log`: per-run pipeline logs.
+- `output/YYYY-MM-DD/macro_calendar_cache.json`: cached macro calendar payload for the report date.
+- `output/YYYY-MM-DD/attempts/<run_id>/attempt_XX_report.md`: saved retry attempt report when delivery is blocked.
+- `output/YYYY-MM-DD/attempts/<run_id>/attempt_XX_audit.json`: saved retry attempt audit.
 
-Rankings are logged in `audit.json` for transparency.
-
-## Fact-Checking
-
-| Layer | Stage | Method |
-|---|---|---|
-| Data validation | Pre-LLM | Assert freshness (today's date), completeness (all fields), range bounds |
-| Number cross-check | Post-LLM | Regex-extract every number from report → match against source data |
-| Claim verification | Post-LLM | Second LLM call checks every claim is grounded in provided data |
-
-Reports with unverified numbers or ungrounded claims are flagged `[NEEDS REVIEW]` in the output metadata.
+The final `report.md` for a date is overwritten by the successful final version of that day; detailed run-by-run output is preserved in logs and attempt artifacts.
 
 ## Configuration
 
-`config/settings.yaml` controls:
+`config/settings.yaml` is the main configuration surface. The most important knobs are:
 
-- **LLM**: model (`google/gemini-3-flash-preview`), temperature, max tokens, OpenRouter base URL
-- **Market indices**: list of index codes to track (Shanghai/Shenzhen)
-- **Sectors**: how many top gainers/losers to include
-- **Validation**: max daily change threshold, index value ranges
-- **News**: max headlines (50), sources (eastmoney_global, cls, futu), ranking config (keyword_top_n, llm_top_n, llm_ranking_enabled)
-- **WeChat**: enable/disable delivery, message format
+| Key | Purpose |
+|---|---|
+| `llm.*` | Base URL, model, token limit, and temperature for report generation |
+| `news.telegram_channels` | Telegram public preview sources to scrape |
+| `news.ranking.*` | Keyword-stage size, LLM-stage size, and ranking toggle |
+| `macro_calendar.source_order` | Macro calendar fallback chain |
+| `delivery_retry.*` | Retry controller for fact-check-blocked delivery |
+| `wechat.enabled` | Enables WeChat delivery when `WECHAT_WEBHOOK_URL` is set |
+
+Important behavior notes:
+
+- The `schedule` block in `config/settings.yaml` is informational only. The runtime does not read it.
+- The actual scheduled trigger is owned by macOS `launchd` when installed.
+- Feishu remains env-driven even though retry behavior itself is configured in YAML.
+
+## Delivery Behavior
+
+### Success path
+
+- WeChat sends the generated report only when `wechat.enabled: true` and `WECHAT_WEBHOOK_URL` is present.
+- Feishu can send the successful report notification when `FEISHU_ENABLED=true`.
+
+### Alert path
+
+Feishu is also the alerting channel for:
+
+- fact-check-blocked delivery attempts,
+- pipeline failures,
+- uncaught exceptions,
+- scheduled-wrapper preflight failures.
+
+### Fact-check gate and retries
+
+- Reports that pass post-generation checks are delivered immediately.
+- Reports that fail post-generation checks are marked `NEEDS REVIEW` and delivery is blocked by default.
+- Blocked runs are retried according to `delivery_retry.*` with a fixed 60-second interval by default.
+- Retry artifacts are saved under `output/YYYY-MM-DD/attempts/`.
+- Setting `ALLOW_NEEDS_REVIEW_DELIVERY=true` forces a clearly labeled test delivery of a flagged report and disables the retry loop for that run.
+
+## Optional macOS Scheduling
+
+```bash
+./scripts/install_launch_agent.sh
+```
+
+This installs a LaunchAgent that runs the wrapper script on weekdays at `15:01` Asia/Shanghai time and logs scheduler stdout/stderr under `output/scheduler_logs/`.
+If you already installed the LaunchAgent, rerun `./scripts/install_launch_agent.sh` after pulling these changes so the existing job is replaced.
+
+Useful commands:
+
+```bash
+launchctl print gui/$(id -u)/com.kingjason.stock-daily-report
+launchctl kickstart -k gui/$(id -u)/com.kingjason.stock-daily-report
+```
+
+The scheduled wrapper is opinionated. Its preflight expects:
+
+- `.venv/bin/python` to exist,
+- `.env` to be present,
+- `OPENROUTER_API_KEY` to be set,
+- `FEISHU_ENABLED=true` and `FEISHU_WEBHOOK_URL` to be configured so preflight failures can alert.
+
+## Current Data Sources
+
+| Area | Current implementation | Notes |
+|---|---|---|
+| Trading day gate | Sina trading calendar | Falls back to weekday-only logic if the calendar fetch fails |
+| Index quotes | Sina primary, EastMoney fallback | Used for major indices |
+| Breadth / top movers | EastMoney with bounded fallbacks | Breadth also has a Legu fallback path |
+| Sector performance | EastMoney / concept / THS fallback chain | Best-effort; third-party stability varies |
+| News | Jin10 via Telegram public preview | Scraped from `t.me/s/jin10data` |
+| Macro calendar | TradingEconomics -> FX678 -> Investing | Cached by report date |
+| PBOC OMO | PBOC listing page, optional RSSHub feed | OMO announcement plus repo / SHIBOR / LPR |
+| Delivery | WeChat webhook, Feishu custom bot | Feishu handles both success and alert events |
+
+## Ranking and Fact-Checking
+
+### News ranking
+
+The Jin10 feed is high-volume, so the pipeline filters it in two stages before generation:
+
+1. Deterministic keyword scoring over title and content.
+2. Optional LLM re-ranking on the top subset using the configured OpenRouter-compatible model.
+
+Ranking metadata is stored in `audit.json`.
+
+### Fact-checking
+
+The pipeline applies checks both before and after generation:
+
+- pre-generation validation checks freshness, completeness, and value ranges on source data,
+- post-generation checks verify report numbers against source data and flag unsupported claims,
+- delivery stays blocked unless post-generation checks pass or the manual override is enabled.
+
+Generated `report.md` files include metadata headers such as `PASSED` or `NEEDS REVIEW`.
+
+## Known Limits
+
+- Telegram scraping depends on the public preview page remaining accessible and structurally stable.
+- Third-party finance and macro sources can rate-limit, return partial data, or change HTML/API behavior without notice.
+- Scheduled runs depend on the local macOS `launchd` environment and the wrapper preflight assumptions.
+- Delivery may be blocked even when a report is generated successfully if the fact-check gate does not pass.

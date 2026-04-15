@@ -245,6 +245,33 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _attach_breadth_ratios(breadth: dict) -> dict:
+    """Add explicit breadth ratio fields so downstream prompts can quote exact values."""
+    if not breadth:
+        return {}
+
+    total_stocks = breadth.get("total_stocks")
+    try:
+        total = int(float(total_stocks))
+    except (TypeError, ValueError):
+        total = 0
+
+    if total <= 0:
+        return dict(breadth)
+
+    enriched = dict(breadth)
+    for count_key, ratio_key in (
+        ("up_count", "up_ratio_pct"),
+        ("down_count", "down_ratio_pct"),
+        ("flat_count", "flat_ratio_pct"),
+    ):
+        value = breadth.get(count_key)
+        if value is None:
+            continue
+        enriched[ratio_key] = round(float(value) / total * 100, 2)
+    return enriched
+
+
 def _fetch_sina_spot_df_fast(
     *,
     request_timeout: int,
@@ -773,7 +800,7 @@ def _compute_breadth(df) -> dict:
         "total_amount": total_amount,
     }
     logger.info("Market breadth: %d up, %d down, %d flat", up_count, down_count, flat_count)
-    return result
+    return _attach_breadth_ratios(result)
 
 
 def _fetch_breadth_fallback_legu() -> dict:
@@ -811,7 +838,7 @@ def _fetch_breadth_fallback_legu() -> dict:
             down_count,
             flat_count,
         )
-        return result
+        return _attach_breadth_ratios(result)
     except Exception as e:
         logger.warning("Legu breadth fallback failed: %s", e)
         return {}
